@@ -1,0 +1,676 @@
+/* PC Agent — Material 3 / Google product redesign (2026-10-03, user: "this
+   aint google enough"). Full pass over the earlier Material-flavored CSS
+   (2026-10-01), which had the right palette/font but read as a generic admin
+   panel: flat app bar, dense inline-styled card bodies, plain chip badges.
+   This version borrows the actual construction details Google's own apps
+   (Gmail/Drive/Contacts) use — Google Sans for display text (Roboto stays
+   for body copy, matching Google's own pairing), a real elevation scale
+   applied on scroll/hover rather than a static border, dot-leading status
+   badges instead of flat color blocks, and a card layout built from
+   labeled sections instead of one run-on paragraph of inline spans.
+
+   2026-10-14: this session tried 3 rounds of an app-wide Kapruka purple/
+   dark-theme/yellow-accent redesign — reverted back to THIS original
+   Google-blue palette per explicit user request ("lets revert back to OG
+   color" / "the very original Google-blue theme... Kapruka purple ONLY on
+   the header bar"). Kept: the Kapruka-purple HEADER BAR (a separate,
+   earlier, still-wanted change — see the header rule below), Inter/
+   Plus Jakarta Sans fonts and the dark-theme TOGGLE INFRASTRUCTURE (the
+   toggle button + localStorage persistence still work, but there is no
+   longer a dark-theme color block for it to switch TO — see the comment
+   at the bottom of this section). */
+:root {
+  --primary: #1a73e8;          /* Google blue 600 */
+  --primary-dark: #1557b0;
+  --primary-tonal: #e8f0fe;    /* blue 50 — tonal button / active chip bg */
+  --accent: #1a73e8;           /* no separate accent in the OG palette — .btn.accent falls back to --primary */
+  --accent-dark: #1557b0;
+  --accent-text: #ffffff;
+  --bg: #f8f9fa;               /* Google gray 50 */
+  --surface: #ffffff;
+  --surface-alt: #f1f3f4;      /* gray 100 — hover/alt rows */
+  --outline: #dadce0;          /* Google gray 300 */
+  --outline-strong: #c4c7c5;
+  --text: #202124;             /* Google gray 900 */
+  --text-dim: #5f6368;         /* Google gray 700 */
+  --text-faint: #80868b;       /* gray 600 */
+  --green: #188038;            /* Google green 700 */
+  --green-tonal: #e6f4ea;
+  --red: #d93025;              /* Google red 600 */
+  --red-tonal: #fce8e6;
+  --amber: #e37400;            /* Google yellow/orange 800 */
+  --amber-tonal: #fef7e0;
+  --purple-tonal: #f3e8fd;
+  --purple-text: #681da8;
+  --kapruka-purple: #402970;     /* real kapruka.com header bg, sampled live (rgb(64,41,112)), 2026-10-13 */
+  --kapruka-purple-dark: #2e1d51;
+  /* Material elevation scale (real Google values, not a flat 1px border) */
+  --e1: 0 1px 2px 0 rgba(60,64,67,.30), 0 1px 3px 1px rgba(60,64,67,.15);
+  --e2: 0 1px 2px 0 rgba(60,64,67,.30), 0 2px 6px 2px rgba(60,64,67,.15);
+  --e3: 0 1px 3px 0 rgba(60,64,67,.30), 0 4px 8px 3px rgba(60,64,67,.15);
+  --e4: 0 2px 3px 0 rgba(60,64,67,.30), 0 6px 10px 4px rgba(60,64,67,.15);
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+  --ease: cubic-bezier(.2,0,0,1);        /* Material standard easing */
+  --ease-em: cubic-bezier(.3,0,.8,.15);  /* Material emphasized easing */
+}
+
+* { box-sizing: border-box; }
+
+/* 2026-10-14, user: "change the font style to make it more user friendly...
+   make it less like claude designed". Inter for body copy — the real
+   standard for readable, friendly UI text across modern products (GitHub,
+   Linear, Notion all ship it), a deliberate move away from Google's Roboto/
+   Google-Sans pairing this redesign came from. Plus Jakarta Sans for
+   display type (headings, brand name, business names) — warmer and more
+   rounded than Google Sans, reads as a genuine product's own type choice
+   rather than a Material-template default. */
+body {
+  margin: 0;
+  font-family: "Inter", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, .brand-headline, header h1 {
+  font-family: "Plus Jakarta Sans", "Segoe UI", Inter, -apple-system, Helvetica, Arial, sans-serif;
+}
+
+/* ------------------------------------------------- header (Kapruka purple app bar) */
+/* 2026-10-06, user: "change top bar color to kapruka purple" — only the
+   header bar itself changes; --primary (buttons, tabs, links) stays Google
+   blue everywhere else in the app, unchanged. */
+header {
+  background: var(--kapruka-purple);
+  color: #fff;
+  padding: 10px 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border-bottom: 1px solid transparent;
+  position: sticky; top: 0; z-index: 20;
+  transition: box-shadow .2s var(--ease), border-color .2s var(--ease);
+}
+/* Real app-bar elevation ON SCROLL (Gmail/Drive do this — flat until the
+   content scrolls under it, then it lifts), driven by a single class JS
+   toggles on window scroll rather than a permanent border. */
+header.scrolled { box-shadow: var(--e1); border-bottom-color: transparent; }
+header:not(.scrolled) { border-bottom-color: var(--kapruka-purple-dark); }
+header .logo-badge {
+  width: 36px; height: 36px; border-radius: 10px;
+  background: #fff;
+  color: var(--kapruka-purple);
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 500; font-size: 17px;
+  flex-shrink: 0;
+  overflow: hidden;
+  position: relative;
+}
+/* Small yellow accent dot, echoing the yellow arc under the "u" in
+   Kapruka's own wordmark logo — a quiet brand callback on the fallback "K"
+   badge (real logo.png, when present, covers this entirely via object-fit). */
+header .logo-badge::after {
+  content: ''; position: absolute; bottom: 4px; right: 4px;
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+}
+header .logo-badge img { width: 100%; height: 100%; object-fit: cover; }
+header h1 {
+  font-weight: 500; font-size: 20px; letter-spacing: 0; margin: 0;
+  color: #fff;
+}
+header .pill {
+  background: rgba(255,255,255,.18); color: #fff;
+  padding: 4px 12px; border-radius: 999px; font-size: 11.5px;
+  font-weight: 500; margin-left: 2px; letter-spacing: .02em;
+}
+header .tagline { margin-left: auto; font-size: 13px; color: rgba(255,255,255,.8); font-weight: 400; white-space: nowrap; }
+
+/* -------------------------------------------------------- Material tabs */
+nav.tabs {
+  display: flex; gap: 2px; padding: 0 20px; background: var(--surface);
+  border-bottom: 1px solid var(--outline); overflow-x: auto;
+  position: sticky; top: 57px; z-index: 19;
+}
+nav.tabs button {
+  position: relative;
+  display: inline-flex; align-items: center; gap: 8px;
+  background: none; border: none; padding: 16px 16px 14px; font-size: 13.5px; font-weight: 500;
+  font-family: inherit;
+  color: var(--text-dim); cursor: pointer; white-space: nowrap;
+  transition: color .15s var(--ease);
+}
+/* 2026-10-03, user: "add more personality to the UI... use of images" —
+   small inline-SVG glyphs per tab (dashboard grid, star for outreach,
+   speech bubble for chat, people for partner chats, gear/shield for
+   settings) instead of plain text labels. Inline SVG (not an icon font or
+   external image) keeps the app fully self-contained with no extra
+   network request and no FOUT-style flash while a font loads. */
+.tab-icon {
+  width: 18px; height: 18px; flex-shrink: 0;
+  fill: currentColor; opacity: .75;
+  transition: opacity .15s var(--ease);
+}
+nav.tabs button.active .tab-icon, nav.tabs button:hover .tab-icon { opacity: 1; }
+nav.tabs button::after {
+  /* 2026-10-14, "more kapruka" — yellow active-tab underline instead of
+     purple-on-purple-ish; mirrors the real site's one-accent-color rule
+     (purple everywhere, yellow marks the one thing that matters right now). */
+  content: ''; position: absolute; left: 10px; right: 10px; bottom: 0; height: 3px;
+  background: var(--accent); border-radius: 3px 3px 0 0;
+  transform: scaleX(0); transition: transform .2s var(--ease);
+}
+nav.tabs button:hover { color: var(--text); }
+nav.tabs button:hover:not(.active) { background: var(--surface-alt); border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
+nav.tabs button.active { color: var(--primary); }
+nav.tabs button.active::after { transform: scaleX(1); }
+
+/* 2026-10-05, user: "when handing over to the human - how will i be
+   notified" — a red counter badge on the Partner Chats tab, the one place
+   in the nav you'd see it from any tab, so a handover isn't only visible by
+   opening that exact chat (the old 🚩 flag inside the chat pane, which this
+   keeps alongside, not replaces). */
+.tab-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; padding: 0 5px; margin-left: -2px;
+  background: var(--error, #c5221f); color: #fff;
+  font-size: 11px; font-weight: 700; line-height: 1;
+  border-radius: 999px;
+}
+
+main { padding: 24px 28px 64px; max-width: 1200px; margin: 0 auto; }
+section { display: none; }
+section.active { display: block; animation: fadeIn .15s var(--ease); }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+
+/* ------------------------------------------------------------ page heading */
+/* Every tab previously either had no heading at all (Categories) or buried
+   one inside a <div class="card"> wrapper that added a border around a
+   single line of text for no reason (Dashboard's old "This week" card).
+   A plain heading block above the content reads as a real page title,
+   matching how Google's own settings/inbox-style apps open each screen. */
+.page-heading { margin-bottom: 18px; }
+.page-heading h2 { font-size: 22px; font-weight: 400; margin: 0 0 2px; color: var(--text); letter-spacing: -.2px; }
+.page-heading .muted { font-size: 13px; }
+
+/* ---------------------------------------------------------------- toolbar */
+.toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
+.toolbar .spacer { flex: 1; }
+.toolbar .updated, .muted { font-size: 12.5px; color: var(--text-dim); font-weight: 400; line-height: 1.5; }
+
+/* ---------------------------------------------------- card (Material outlined) */
+.card {
+  background: var(--surface); border: 1px solid var(--outline); border-radius: var(--radius-lg);
+  padding: 20px 22px; margin-bottom: 16px;
+  transition: box-shadow .2s var(--ease), border-color .2s var(--ease);
+}
+.card:hover { box-shadow: var(--e1); border-color: transparent; }
+.card h2 { font-size: 16px; margin: 0 0 12px; color: var(--text); font-weight: 500; }
+
+/* ----------------------------------------------------------- stat cards */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.stat {
+  position: relative;
+  background: var(--surface); border: 1px solid var(--outline); border-radius: var(--radius-lg);
+  padding: 20px 18px; text-align: left; overflow: hidden;
+  transition: box-shadow .2s var(--ease);
+}
+.stat:hover { box-shadow: var(--e1); }
+/* A thin tonal top bar per stat gives each number a distinct identity at a
+   glance (Google's own metric tiles — e.g. Search Console's overview cards
+   — use exactly this device) instead of every tile looking identical until
+   you read the label text. */
+.stat::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: var(--primary);
+}
+.stat.agreed::before { background: var(--green); }
+.stat.not-agreed::before { background: var(--red); }
+.stat.unresponsive::before { background: var(--amber); }
+.stat .n { font-size: 34px; font-weight: 400; color: var(--text); letter-spacing: -1px; line-height: 1.1; }
+.stat .l { font-size: 12px; color: var(--text-dim); font-weight: 500; margin-top: 6px; letter-spacing: .01em; }
+.stat.agreed .n { color: var(--green); }
+.stat.not-agreed .n { color: var(--red); }
+.stat.unresponsive .n { color: var(--amber); }
+/* 2026-10-03 personality pass — a small tonal icon badge in the corner of
+   each stat tile, echoing the top accent bar's color so the glyph and the
+   number read as one unit rather than a number with a stray icon pasted on. */
+.stat-icon {
+  position: absolute; top: 14px; right: 14px; width: 20px; height: 20px;
+  fill: var(--primary); opacity: .22;
+}
+.stat.agreed .stat-icon { fill: var(--green); }
+.stat.not-agreed .stat-icon { fill: var(--red); }
+.stat.unresponsive .stat-icon { fill: var(--amber); }
+
+/* 2026-10-13, pipeline interface — each stage card is clickable (drills
+   into Partner Chats filtered to that stage, see loadDashboard). 2026-10-14
+   added a hover lift so the clickability actually reads as a button, not
+   just a static number tile with a cursor change. */
+.pipeline-stage { transition: box-shadow .2s var(--ease), border-color .2s var(--ease), transform .12s var(--ease); }
+.pipeline-stage:hover { transform: translateY(-2px); }
+.pipeline-stage:active { box-shadow: none; transform: translateY(1px); }
+.handover-stage::before { background: var(--red); }
+.handover-stage .n { color: var(--red); }
+.handover-stage .stat-icon { fill: var(--red); }
+
+/* 2026-10-13, user: "change the pipeline interfacee" -> funnel/flow layout
+   (confirmed via AskUserQuestion). Reached -> In progress is the trunk
+   every partner passes through; it then splits into 4 outcome branches,
+   each with its own fill bar sized as a % of Reached (set inline by
+   loadPipeline) so the funnel visually narrows with the real conversion
+   data instead of being 6 identical boxes in a row. */
+.pipeline-funnel { margin-bottom: 18px; }
+.funnel-trunk {
+  display: flex; align-items: stretch; gap: 10px; margin-bottom: 22px;
+}
+.funnel-trunk .funnel-main { flex: 1; }
+.funnel-chevron {
+  width: 22px; height: 22px; align-self: center; flex-shrink: 0;
+  fill: var(--outline-strong);
+}
+/* The second chevron (after "In progress") points down into the branch row
+   below rather than sideways, since the funnel visually forks there. */
+.funnel-chevron-branch { display: none; }
+.funnel-branches {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px;
+  position: relative; padding-top: 22px;
+}
+/* A faint connecting line from the trunk into the branch row, so the 4
+   outcome cards read as children of "In progress" rather than a second,
+   unrelated row of stats. */
+.funnel-branches::before {
+  content: ''; position: absolute; top: 0; left: 8%; right: 8%; height: 1px;
+  background: var(--outline);
+}
+.funnel-branch { padding-bottom: 28px; }
+/* The bar's track sits behind the card content; its width (set inline by
+   loadPipeline as a % of Reached) is the actual fill — no separate overlay
+   element needed, the div's own background + width does the job. */
+.funnel-bar {
+  position: absolute; left: 18px; bottom: 14px; height: 4px; width: 0;
+  border-radius: 2px; background: var(--primary);
+  transition: width .4s var(--ease-em);
+}
+.funnel-branch::after {
+  content: ''; position: absolute; left: 18px; right: 18px; bottom: 14px; height: 4px;
+  border-radius: 2px; background: var(--outline); z-index: -1;
+}
+.funnel-branch.agreed .funnel-bar { background: var(--green); }
+.funnel-branch.not-agreed .funnel-bar { background: var(--red); }
+.funnel-branch.unresponsive .funnel-bar { background: var(--amber); }
+.funnel-branch.handover-stage .funnel-bar { background: var(--red); }
+
+@media (max-width: 700px) {
+  .funnel-trunk { flex-direction: column; }
+  .funnel-chevron { transform: rotate(90deg); align-self: center; }
+}
+
+/* ----------------------------------------------------------------- table */
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+thead th, table th {
+  text-align: left; padding: 12px 14px; background: var(--surface); color: var(--text-dim);
+  font-weight: 500; font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em;
+  border-bottom: 1px solid var(--outline);
+}
+tbody td, table td { padding: 12px 14px; border-bottom: 1px solid var(--surface-alt); vertical-align: top; color: var(--text); }
+tbody tr:hover { background: var(--surface-alt); }
+tbody tr:last-child td { border-bottom: none; }
+
+/* --------------------------------------------------- badge (Material chip) */
+/* Google's own status pills (Gmail labels, Drive sharing states) lead with a
+   small dot rather than filling the whole chip with saturated color — reads
+   calmer at a glance across a dense card, and scales better when several
+   badges sit side by side. */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 11px 4px 9px; border-radius: 8px; font-size: 11.5px; font-weight: 500;
+  letter-spacing: .01em; white-space: nowrap;
+}
+.badge::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0;
+}
+.badge.new { background: var(--green-tonal); color: var(--green); }
+.badge.real { background: var(--amber-tonal); color: var(--amber); }
+.badge.expand { background: var(--purple-tonal); color: var(--purple-text); }
+.badge.seo { background: var(--primary-tonal); color: var(--primary); }
+.badge.new_review, .badge.pending_review { background: var(--purple-tonal); color: var(--purple-text); }
+.badge.contacted { background: var(--primary-tonal); color: var(--primary); }
+.badge.replied { background: var(--amber-tonal); color: var(--amber); }
+.badge.negotiating { background: var(--amber-tonal); color: var(--amber); }
+.badge.agreed, .badge.approved, .badge.covered { background: var(--green-tonal); color: var(--green); }
+.badge.not_agreed, .badge.rejected, .badge.check_failed { background: var(--red-tonal); color: var(--red); }
+.badge.unresponsive { background: var(--purple-tonal); color: var(--purple-text); }
+.badge.removed { background: var(--surface-alt); color: var(--text-dim); }
+/* A badge that's purely informational (department tag, source tag) rather
+   than a status reads better as an outlined "assist chip" with no dot —
+   dots are reserved for actual pipeline STATE. */
+.badge.tag {
+  background: var(--surface); border: 1px solid var(--outline); color: var(--text-dim);
+}
+.badge.tag::before { display: none; }
+
+/* ----------------------------------------------------------------- forms */
+input[type=text], input[type=number], input[type=email], input[type=search],
+select, textarea {
+  padding: 11px 14px; border: 1px solid var(--outline); border-radius: var(--radius-sm);
+  font-size: 14px; background: var(--surface); color: var(--text); font-weight: 400;
+  font-family: inherit; width: 100%;
+  transition: border-color .15s var(--ease), box-shadow .15s var(--ease);
+}
+input:hover, select:hover, textarea:hover { border-color: var(--outline-strong); }
+input:focus, select:focus, textarea:focus {
+  outline: none; border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+textarea { min-height: 320px; font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; font-size: 12.5px; }
+/* 2026-10-05, user: screenshot of the Partner Chats filter rendering as a
+   giant native OS-style dropdown — select had padding/border from the rule
+   above but no `appearance: none`, so every browser drew its own default
+   chevron/sizing on top, and nothing capped its width inside a flex
+   toolbar. Custom chevron via inline SVG (Google's own down-arrow glyph,
+   recolored to --text-dim) + a sane default max-width so a lone filter
+   select doesn't stretch to fill the whole row. */
+select {
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  max-width: 260px; cursor: pointer;
+  padding-right: 36px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%235f6368'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center; background-size: 18px;
+}
+.setting-row select { max-width: 200px; }
+label.field { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 6px; font-weight: 500; letter-spacing: .01em; }
+.field-row { margin-bottom: 16px; max-width: 420px; }
+
+/* --------------------------------------------------------- settings rows */
+/* Google's own settings pages (Account, Workspace admin) lay each setting
+   out as title + description on the left, control on the right, full-width
+   divider rows — not a stack of bare <label>/<input> pairs with no
+   description. .settings-card's <h2> stays as the section header; each
+   .setting-row below it is one of these rows. */
+.settings-card h2 { margin-bottom: 4px; }
+.setting-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 24px;
+  padding: 16px 0; border-bottom: 1px solid var(--surface-alt);
+}
+.setting-row:last-of-type { border-bottom: none; padding-bottom: 8px; }
+.setting-copy { display: flex; flex-direction: column; gap: 3px; max-width: 420px; }
+.setting-title { font-size: 14px; font-weight: 500; color: var(--text); }
+.setting-desc { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
+.setting-row input, .setting-row select { width: 200px; flex-shrink: 0; }
+@media (max-width: 640px) {
+  .setting-row { flex-direction: column; align-items: stretch; gap: 10px; }
+  .setting-row input, .setting-row select { width: 100%; }
+}
+/* 2026-10-14, Partner Central team contacts — up to 3 stacked inputs per
+   field (email/phone), inside a .setting-row whose own input rule above
+   would otherwise force a single fixed-width input. */
+.contact-field-list { display: flex; flex-direction: column; gap: 6px; width: 280px; flex-shrink: 0; }
+.contact-field-list input { width: 100%; }
+/* 2026-10-14, user: "have a test button on email... test all or test each
+   email or number" — each contact input gets its own inline Test button. */
+.contact-field-row { display: flex; gap: 6px; align-items: center; }
+.contact-field-row input { flex: 1; min-width: 0; }
+.contact-field-row .btn-test-contact { padding: 8px 12px; font-size: 12px; flex-shrink: 0; }
+@media (max-width: 640px) {
+  .contact-field-list { width: 100%; }
+}
+
+/* ----------------------------------------------- buttons (Material pills) */
+button.btn {
+  background: var(--primary); color: #fff; border: none; border-radius: 999px;
+  padding: 10px 24px; font-size: 13.5px; font-weight: 500; cursor: pointer;
+  font-family: inherit; letter-spacing: .01em;
+  box-shadow: none;
+  transition: background .15s var(--ease), box-shadow .15s var(--ease);
+}
+button.btn:hover { background: var(--primary-dark); box-shadow: var(--e1); }
+button.btn:active { box-shadow: none; }
+button.btn.secondary {
+  background: var(--surface); border: 1px solid var(--outline); color: var(--primary);
+}
+button.btn.secondary:hover { background: var(--primary-tonal); border-color: var(--primary-tonal); box-shadow: none; }
+button.btn.danger { background: var(--surface); border: 1px solid var(--outline); color: var(--red); }
+button.btn.danger:hover { background: var(--red-tonal); border-color: var(--red-tonal); box-shadow: none; }
+/* 2026-10-14, "more kapruka and more interactive" — Kapruka's own site uses
+   its yellow as ONE strong accent against the purple (search button, sale
+   badges), never as a second competing brand color. .btn.accent mirrors
+   that: reserved for the single primary action on a view (Find more
+   businesses, Send, Save), never the default button style. */
+button.btn.accent { background: var(--accent); color: var(--accent-text); }
+button.btn.accent:hover { background: var(--accent-dark); box-shadow: var(--e1); }
+button.btn:active:not(:disabled) { transform: scale(.97); }
+button.btn { transition: background .15s var(--ease), box-shadow .15s var(--ease), transform .08s var(--ease); }
+button.btn:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+
+/* ------------------------------------------------- brand (business) cards */
+.card.brand-card {
+  border: 1px solid var(--outline);
+  padding: 0;                 /* sections below manage their own padding, see .brand-top */
+  overflow: hidden;
+}
+.card.brand-card:hover { box-shadow: var(--e2); border-color: transparent; }
+.brand-top { padding: 20px 22px 18px; }
+/* Status badges + source/department tags sit on their OWN line above the
+   name, not interleaved with it — the old layout put "Mineral Earth"
+   between a department badge and three more badges, which reads as noise
+   before you even get to the business name itself. */
+.brand-meta-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.brand-headline { display: block; font-size: 21px; font-weight: 500; color: var(--text); letter-spacing: -.2px; line-height: 1.3; }
+.brand-sub { margin-top: 2px; font-size: 13px; color: var(--text-dim); }
+.brand-sub a.link { font-weight: 500; }
+
+/* Section label/value rows — replaces the old run-on <div class="brand-section">
+   blocks that put a tiny caption directly above a full paragraph with no
+   visual separation between stacked sections. */
+.brand-section { margin-top: 14px; }
+.brand-section .lbl {
+  display: block; font-weight: 500; color: var(--text-faint); font-size: 11px;
+  text-transform: uppercase; letter-spacing: .05em; margin-bottom: 4px;
+}
+.brand-section .val { font-size: 13.5px; color: var(--text); line-height: 1.6; }
+
+/* 2026-10-08, demand-evidence card redesign — grouped Google Ads/GA4/Daraz
+   mini-sections instead of one flat badge list (see renderDemandEvidence). */
+.demand-group { margin-top: 10px; }
+.demand-group:first-child { margin-top: 0; }
+.demand-group-title {
+  font-size: 10.5px; font-weight: 500; color: var(--text-faint);
+  text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px;
+}
+.demand-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 10px; padding: 3px 0; font-size: 13px; border-bottom: 1px solid var(--outline);
+}
+.demand-row:last-child { border-bottom: none; }
+.demand-kw { color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.demand-figs { color: var(--text-dim); white-space: nowrap; display: flex; gap: 10px; }
+.demand-figs strong { color: var(--text); font-weight: 500; }
+.demand-geo-tag {
+  display: inline-block; font-size: 9.5px; font-weight: 700; letter-spacing: .03em;
+  color: var(--primary); background: var(--primary-tonal); border-radius: 4px;
+  padding: 1px 4px; vertical-align: middle;
+}
+
+.social-chips { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+.social-chips a {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 15px; border-radius: 999px; border: 1px solid var(--outline);
+  font-size: 12.5px; font-weight: 500; color: var(--primary); text-decoration: none;
+  background: var(--surface); transition: background .12s var(--ease), box-shadow .12s var(--ease);
+}
+.social-chips a:hover { background: var(--primary-tonal); border-color: var(--primary-tonal); box-shadow: var(--e1); }
+.social-chips a.phone-chip {
+  background: var(--green-tonal); border-color: transparent; color: var(--green);
+  font-weight: 500;
+}
+.social-chips a.phone-chip:hover { background: #ceead6; border-color: transparent; }
+.social-chips a.wa-chip {
+  background: #25d366; border-color: transparent; color: #fff; font-weight: 500;
+}
+.social-chips a.wa-chip:hover { background: #1da851; border-color: transparent; }
+.social-chips a.wa-chip.unverified {
+  background: var(--surface); border: 1px solid #25d366; color: #128c3e; font-weight: 500;
+}
+.social-chips a.wa-chip.unverified:hover { background: #eafaf0; border-color: #25d366; }
+.social-chips a.email-chip {
+  background: var(--primary-tonal); border-color: transparent; color: var(--primary-dark);
+}
+.social-chips a.email-chip:hover { background: #d2e3fc; border-color: transparent; }
+
+.brand-footer-note { margin-top: 14px; font-size: 12.5px; color: var(--text-dim); background: var(--surface-alt); padding: 10px 14px; border-radius: var(--radius-sm); }
+
+/* Action bar — bottom edge of the card, visually separated from the content
+   above it by its own tonal strip rather than floating inline next to the
+   headline (old layout had Approve/Reject crammed into the same toolbar row
+   as the business name). */
+.brand-actions {
+  display: flex; gap: 10px; align-items: center;
+  padding: 14px 22px; background: var(--surface-alt); border-top: 1px solid var(--outline);
+}
+.brand-actions .muted { margin-left: 2px; }
+
+/* Full-bleed tile gallery — zero gaps, images run edge-to-edge (user:
+   "make the images bigger like full tile view without gaps"). Sits between
+   .brand-top and .brand-actions, so no negative-margin trick is needed any
+   more now the card manages padding per-section instead of as one block. */
+.brand-gallery {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);  /* one row of 4 */
+  gap: 0;
+  border-top: 1px solid var(--outline);
+  border-bottom: 1px solid var(--outline);
+}
+.brand-gallery img {
+  /* 2026-10-14, user screenshot: a wide wordmark logo forced into this
+     box's square crop (object-fit: cover) showed only a thin unrecognizable
+     sliver of it. object-fit: contain fixes that for ANY image shape — a
+     square product photo still fills the box fine; a wide/tall logo now
+     displays whole, just with some neutral padding around it, which reads
+     far better than a cropped mess. */
+  width: 100%; aspect-ratio: 1 / 1; object-fit: contain;
+  min-height: 240px;
+  border: none; border-radius: 0;
+  background: var(--surface-alt); display: block; padding: 8px;
+  transition: transform .3s var(--ease-em), filter .3s var(--ease-em);
+}
+.brand-gallery img:hover {
+  transform: scale(1.04);
+  filter: brightness(1.04);
+  position: relative; z-index: 2;
+}
+.brand-gallery.n2 { grid-template-columns: repeat(2, 1fr); }
+.brand-gallery.n3 { grid-template-columns: repeat(3, 1fr); }
+.brand-gallery.single { grid-template-columns: minmax(240px, 380px); }
+.brand-gallery.single img {
+  object-fit: contain; padding: 24px; background: #fff;
+}
+/* 2026-10-05: favicon fallback for brands with no scraped product/og image —
+   a 128px icon stretched to the same 240px+ box as a real photo looked
+   broken, so it gets its own small, centered treatment instead. */
+.brand-gallery-favicon { grid-template-columns: 96px !important; border: none; }
+.brand-gallery-favicon img {
+  min-height: 0; width: 56px; height: 56px; margin: 20px auto;
+  object-fit: contain; padding: 0; background: transparent; border-radius: 12px;
+}
+
+/* ------------------------------------------------------------------ chat */
+.chat-card { height: 70vh; display: flex; flex-direction: column; }
+.chat-card .chat-msgs { display: flex; flex-direction: column; }
+.chat-layout { display: flex; gap: 16px; height: 70vh; }
+.chat-list { width: 300px; overflow-y: auto; border-right: 1px solid var(--outline); padding-right: 12px; flex-shrink: 0; }
+.chat-list .item {
+  padding: 12px; padding-left: 10px; border-radius: var(--radius-md); cursor: pointer;
+  margin-bottom: 4px; font-size: 13.5px; border-left: 3px solid transparent;
+  transition: background .12s var(--ease), border-color .12s var(--ease), transform .08s var(--ease);
+}
+.chat-list .item:hover { background: var(--surface-alt); transform: translateX(2px); }
+.chat-list .item.active { background: var(--primary-tonal); border-left-color: var(--primary); }
+.chat-list .item .nm { font-weight: 500; color: var(--text); }
+.chat-list .item .meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+.chat-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.chat-msgs { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 10px; }
+.msg { max-width: 75%; padding: 11px 16px; border-radius: 18px; font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.msg.kogul { background: var(--surface-alt); color: var(--text); align-self: flex-start; border-bottom-left-radius: 4px; }
+.msg.partner { background: var(--primary); color: #fff; align-self: flex-end; border-bottom-right-radius: 4px; }
+.msg.human { background: var(--green-tonal); color: #0d652d; align-self: flex-start; border-bottom-left-radius: 4px; }
+.msg.system { background: var(--amber-tonal); color: #7a5800; font-style: italic; font-size: 12.5px; align-self: center; border-radius: 10px; }
+.chat-input { display: flex; gap: 8px; padding-top: 12px; border-top: 1px solid var(--outline); margin-top: 8px; }
+.chat-input select { flex-shrink: 0; }
+
+/* 2026-10-06, user: "make sure the kogul has the ability to send images,
+   files, read images if recieved, also in chat stimulation and partner
+   chats" — attach button + pending-file preview chips + in-message
+   attachment rendering, shared across all 3 chat surfaces. */
+.chat-attach-wrap { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.chat-pending-files { display: flex; flex-wrap: wrap; gap: 6px; }
+.chat-pending-files:empty { display: none; }
+.pending-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--surface-alt); border: 1px solid var(--outline);
+  border-radius: 14px; padding: 4px 10px 4px 8px; font-size: 12px; color: var(--text-dim);
+}
+.pending-chip .remove { cursor: pointer; color: var(--text-faint); font-weight: 700; }
+.pending-chip .remove:hover { color: var(--red); }
+.btn-attach {
+  flex-shrink: 0; width: 38px; height: 38px; border-radius: 50%;
+  background: var(--surface); border: 1px solid var(--outline); color: var(--text-dim);
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.btn-attach:hover { background: var(--surface-alt); border-color: var(--outline-strong); }
+.btn-attach svg { width: 20px; height: 20px; fill: currentColor; }
+
+.msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.msg-att-image { max-width: 220px; max-height: 220px; border-radius: 10px; display: block; cursor: pointer; }
+.msg-att-file {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(0,0,0,.06); border-radius: 10px; padding: 6px 10px;
+  font-size: 12px; text-decoration: none; color: inherit;
+}
+.msg.partner .msg-att-file { background: rgba(255,255,255,.2); color: #fff; }
+.msg-att-file svg { width: 14px; height: 14px; fill: currentColor; flex-shrink: 0; }
+
+/* ---------------------------------------------------------------- toggle */
+.toggle { position: relative; width: 44px; height: 24px; background: var(--outline); border-radius: 20px; cursor: pointer; display: inline-block; transition: background .15s var(--ease); }
+.toggle.on { background: var(--primary); }
+.toggle .dot { position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; background: #fff; border-radius: 50%; transition: left .15s var(--ease); box-shadow: var(--e1); }
+.toggle.on .dot { left: 22px; }
+
+/* -------------------------------------------------------------- reasons */
+.reasons-list { list-style: none; padding: 0; margin: 0; }
+.reasons-list li { display: flex; justify-content: space-between; padding: 11px 0; border-bottom: 1px solid var(--surface-alt); font-size: 13.5px; }
+.reasons-list li:last-child { border-bottom: none; }
+.reasons-list strong { color: var(--primary); font-weight: 500; }
+
+.empty { color: var(--text-dim); font-size: 13.5px; padding: 48px 24px; text-align: center; }
+
+/* 2026-10-03 personality pass — illustrated empty states (icon + message)
+   replacing the old plain-text .empty div across the app. Kept as its own
+   class (not a replacement for .empty, which a couple of simpler one-line
+   list placeholders still use deliberately) since a full icon treatment
+   only suits a page/section-level empty state, not an inline list row. */
+.empty-state { text-align: center; padding: 56px 24px; color: var(--text-dim); }
+.empty-icon {
+  width: 56px; height: 56px; margin: 0 auto 16px;
+  border-radius: 50%; background: var(--surface-alt);
+  display: flex; align-items: center; justify-content: center;
+}
+.empty-icon svg { width: 28px; height: 28px; fill: var(--text-faint); }
+.empty-text { font-size: 13.5px; max-width: 320px; margin: 0 auto; line-height: 1.5; }
+
+a.link { color: var(--primary); text-decoration: none; font-weight: 500; }
+a.link:hover { text-decoration: underline; }
+
+/* --------------------------------------------------------- responsive gaps */
+@media (max-width: 720px) {
+  header { flex-wrap: wrap; padding: 10px 16px; }
+  header .tagline { display: none; }
+  main { padding: 16px; }
+  nav.tabs { padding: 0 8px; top: 53px; }
+  .chat-layout { flex-direction: column; height: auto; }
+  .chat-list { width: 100%; border-right: none; border-bottom: 1px solid var(--outline); padding-right: 0; padding-bottom: 10px; max-height: 200px; }
+  .brand-gallery { grid-template-columns: repeat(3, 1fr); }
+  .brand-actions { flex-wrap: wrap; }
+}

@@ -1,0 +1,17 @@
+# Manual already-a-partner override list for brand discovery.
+#
+# WHY THIS EXISTS: the automated check reads kapruka.com/scripts/sitemap_partners.jsp,
+# which lists only businesses that have a /partner/<slug> storefront (~420 entries).
+# A business can already be a Kapruka partner WITHOUT appearing there — e.g. its
+# products are listed under a normal category rather than its own partner page.
+# Caravan Fresh was exactly this case (user caught it 2026-10-01, after brand
+# discovery surfaced it as a fresh lead).
+#
+# HOW TO USE: add one entry per line — a domain, or a business name, or both.
+# Matching is case-insensitive and ignores spaces/hyphens, so "Caravan Fresh",
+# "caravanfresh" and "caravanfresh.lk" all work. Lines starting with # are ignored.
+# Anything listed here is dropped from brand discovery before it ever reaches the
+# fit judgment, so it can never appear as a weekly outreach card again.
+
+caravanfresh.lk
+Caravan Fresh

@@ -1,0 +1,20 @@
+# Kogul brand-discovery seed list — one URL per line.
+# Paste in any independent Sri Lankan / diaspora-facing brand website you
+# spot that looks like a good Partner Central fit. Kogul reads this file
+# fresh every weekly generate, fetches each site, checks it against the live
+# Partner Central sitemap (already-onboarded brands are skipped/flagged
+# automatically — no need to pre-check that yourself), and judges business-
+# context fit (niche/giftable/curated, not a mass-commodity reseller).
+#
+# Lines starting with # are ignored. A URL already judged this run (pass or
+# reject) is skipped on future runs unless re-added — see
+# kogul/data/brand_discovery_seen.json.
+
+# --- user-provided examples, 2026-10-01 ---
+https://getmazeted.com/
+# https://sokkrepublic.com/   -- already a Partner Central partner (sokk-republic), kept for reference
+# https://skrumptious.lk/     -- already a Partner Central partner (skrumptious), kept for reference
+# https://caravanfresh.lk/    -- ALREADY A PARTNER (user confirmed 2026-10-01). NOTE: it has NO
+#                                /partner/<slug> entry in sitemap_partners.jsp, so the automated
+#                                already-onboarded check could not catch it — see
+#                                kogul/KNOWN_PARTNERS.txt for the manual override list.
