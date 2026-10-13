@@ -2539,6 +2539,182 @@ def api_whatsapp_test_sends():
     return jsonify({"ok": True, "sends": [dict(r) for r in rows]})
 
 
+# ------------------------------------------------------------- WhatsApp webhook
+# 2026-10-13, user: "now i have to setup the webhook" — the real inbound
+# half of WhatsApp, deliberately deferred since the project started (see
+# module docstring: "dont worry about the webhook and all just build the
+# front end for end and backend"). Reuses the EXACT same reply-generation
+# path real partner chats already use (_do_partner_auto_reply / the
+# reply_from_partner status-update logic) rather than a parallel pipeline,
+# so a webhook-driven conversation behaves identically to one driven through
+# the Partner Chats UI — same handover/not_agreed/takeover rules, same
+# prompt. The one real difference, confirmed via AskUserQuestion ("also go
+# real"): PC Agent's reply is now ALSO sent for real over the WhatsApp Cloud
+# API, not just logged — _log_message's own simulated=True calls inside
+# _do_partner_auto_reply are left untouched (so every OTHER caller of that
+# function — category-approve auto-opening, the manual "Start outreach"
+# button, Simulate as Partner — keeps behaving exactly as before); this
+# route sends the returned reply text itself as a separate, explicit step.
+def _normalize_wa_phone(raw: str) -> str:
+    return re.sub(r"[^\d]", "", raw or "").lstrip("0") if raw else ""
+
+
+def _find_partner_by_phone(phone_digits: str) -> int | None:
+    """Matches an inbound WhatsApp sender number to a real partners row.
+    Numbers aren't guaranteed to be stored in one consistent format
+    (phone/phone_2 may carry a leading '+', spaces, or a leading '0'), so
+    both sides are normalized to bare trailing digits before comparing —
+    matches on the last 9 digits (enough to be a real local number, short
+    enough to survive a country-code or leading-zero mismatch either side)."""
+    if len(phone_digits) < 9:
+        return None
+    tail = phone_digits[-9:]
+    with db.conn() as c:
+        rows = c.execute(
+            "SELECT id, phone, phone_2 FROM partners WHERE status != 'removed' "
+            "AND (phone IS NOT NULL OR phone_2 IS NOT NULL)"
+        ).fetchall()
+    for r in rows:
+        for stored in (r["phone"], r["phone_2"]):
+            if stored and _normalize_wa_phone(stored)[-9:] == tail:
+                return r["id"]
+    return None
+
+
+@app.route("/webhook/whatsapp", methods=["GET"])
+def api_whatsapp_webhook_verify():
+    """Meta's one-time verification handshake, run when the callback URL is
+    first registered (or re-verified) in the Meta App Dashboard. Meta sends
+    hub.mode=subscribe, hub.verify_token (must match WA_WEBHOOK_VERIFY_TOKEN
+    in .env — generated for this project, given to the user to paste into
+    the Dashboard), and hub.challenge (echoed back verbatim as plain text on
+    a match, which is how Meta confirms this endpoint is really the owner's)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    from _env import env as _wa_env
+    cfg = _wa_env()
+    verify_token = cfg.get("WA_WEBHOOK_VERIFY_TOKEN") or ""
+
+    mode = request.args.get("hub.mode", "")
+    token = request.args.get("hub.verify_token", "")
+    challenge = request.args.get("hub.challenge", "")
+    if mode == "subscribe" and verify_token and token == verify_token:
+        return challenge, 200
+    return "verification failed", 403
+
+
+@app.route("/webhook/whatsapp", methods=["POST"])
+def api_whatsapp_webhook_receive():
+    """Real inbound WhatsApp messages land here. Verifies the request is
+    genuinely from Meta (X-Hub-Signature-256, HMAC-SHA256 over the raw body
+    using META_APP_SECRET) before trusting anything in it — webhook URLs are
+    public, so anything short of signature verification would let anyone who
+    finds this URL inject fake "partner replies" straight into real
+    conversations. Fails CLOSED on a bad/missing signature (403), not open —
+    unlike the fail-open discipline elsewhere in this app, a spoofable
+    inbound endpoint is a real security gap, not just a feature degrading
+    gracefully.
+
+    Always returns 200 to Meta quickly (even on an internal error) once the
+    signature itself checks out — Meta retries/disables a webhook that
+    doesn't return 200, so a transient downstream failure (e.g. OpenAI
+    timeout) is logged and swallowed here rather than surfaced as a webhook
+    failure Meta would act on."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    from _env import env as _wa_env
+    import notify_whatsapp
+    cfg = _wa_env()
+
+    app_secret = cfg.get("META_APP_SECRET") or ""
+    raw_body = request.get_data()
+    if app_secret:
+        import hashlib
+        import hmac
+        signature = request.headers.get("X-Hub-Signature-256", "")
+        expected = "sha256=" + hmac.new(app_secret.encode(), raw_body, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            return jsonify({"ok": False, "error": "invalid signature"}), 403
+    else:
+        # META_APP_SECRET not set yet (placeholder left empty in .env until
+        # pulled from the Meta App Dashboard) — logged so this gap is visible
+        # rather than silently accepting unsigned requests forever.
+        print("[whatsapp webhook] WARNING: META_APP_SECRET not set — skipping signature verification", file=sys.stderr)
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        entries = payload.get("entry") or []
+        for entry in entries:
+            for change in (entry.get("changes") or []):
+                value = change.get("value") or {}
+                for msg in (value.get("messages") or []):
+                    _handle_inbound_whatsapp_message(msg, value, cfg, notify_whatsapp)
+                # delivery/read status callbacks (value.get("statuses")) carry
+                # no partner-facing content — intentionally ignored, nothing
+                # in this app's schema tracks per-message delivery state.
+    except Exception as e:
+        print(f"[whatsapp webhook] error processing payload: {e}", file=sys.stderr)
+    return jsonify({"ok": True}), 200
+
+
+def _handle_inbound_whatsapp_message(msg: dict, value: dict, cfg: dict, notify_whatsapp) -> None:
+    """One real inbound message -> matched to a partner -> logged via the
+    same reply_from_partner-shaped update, auto-replied via the same
+    _do_partner_auto_reply the UI uses, then that reply is ACTUALLY SENT
+    back over WhatsApp (the one real-vs-simulated difference from every
+    other caller of that function — see this section's header comment).
+    Fails open per message: one bad/unmatched message is logged and skipped,
+    never crashes the whole webhook request."""
+    from_number = msg.get("from") or ""
+    msg_type = msg.get("type")
+    if msg_type == "text":
+        text = (msg.get("text") or {}).get("body", "").strip()
+    else:
+        # Non-text inbound (image/document/audio/etc) — the body-less types
+        # this app's attachments pipeline isn't wired to ingest from a real
+        # WhatsApp webhook yet (attachments.save_uploads expects a Flask
+        # FileStorage, not a WhatsApp media-id); acknowledged with a short
+        # placeholder so the conversation isn't silently missing a turn,
+        # rather than silently dropped.
+        text = f"[{msg_type} message received — not yet processed]"
+    if not text:
+        return
+
+    phone_digits = _normalize_wa_phone(from_number)
+    partner_id = _find_partner_by_phone(phone_digits)
+    if not partner_id:
+        print(f"[whatsapp webhook] inbound from unknown number {from_number!r} — no matching partner, ignored",
+              file=sys.stderr)
+        return
+
+    with db.conn() as c:
+        p = c.execute("SELECT status, human_takeover FROM partners WHERE id = ?", (partner_id,)).fetchone()
+    if not p:
+        return
+
+    _log_message(partner_id, "partner", text, simulated=False)
+    with db.conn() as c:
+        c.execute("UPDATE partners SET status = 'replied' WHERE id = ? AND status IN ('new','contacted')",
+                   (partner_id,))
+        c.execute("UPDATE partners SET followup_stage = 'none' WHERE id = ?", (partner_id,))
+
+    if p["human_takeover"]:
+        return  # a human already owns this conversation — PC Agent stays quiet
+
+    result, status = _do_partner_auto_reply(partner_id, opening=False)
+    reply_text = result.get("message") if status == 200 else None
+    if not reply_text:
+        return  # generation failed, or this turn produced no partner-facing reply (shouldn't happen, fails open)
+
+    to = phone_digits.lstrip("+") or from_number
+    try:
+        notify_whatsapp.send_text(cfg, to, reply_text)
+    except (Exception, SystemExit) as e:
+        # the reply is already logged (simulated=True, inside
+        # _do_partner_auto_reply) even if the real send fails — a failed
+        # WhatsApp API call never loses the conversation's own record of
+        # what PC Agent decided to say.
+        print(f"[whatsapp webhook] real send to {to} failed: {e}", file=sys.stderr)
+
+
 # --------------------------------------------------------------- attachments
 # 2026-10-06, user: "make sure the kogul has the ability to send images,
 # files, read images if recieved, also in chat stimulation and partner
