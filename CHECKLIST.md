@@ -1748,3 +1748,8 @@ ai replying or human has taken over".
 - [x] Known facts are no longer silently dropped: first brief step is ONE message stating what research found (sells / product count / location) and asking to confirm or correct; their correction wins; no one-by-one re-asking. brain.brief_block + app_kogul._known_facts_for_partner wording.
 - [x] Verified with real gpt-4o chats, run twice (2 businesses each): confirmation in one message 2/2 and 2/2; partner correction (389 -> 450) used.
 - [x] 2026-10-14 opening message replaced with user's 'new intro' (db.py default + local DB + VPS DB setting); {category} fills e.g. 'Grocery & Fresh Food'; no business name in the greeting.
+
+## 2026-10-14 — Outreach template with a name variable (user's Meta template "Hi {{1}}" header + 2 quick-reply buttons)
+- [x] New setting wa_outreach_template_name ("Template greets by name" checkbox): when on, the template send passes the partner's name as the header variable; off = no components. Verified with a stubbed send: on -> header param "Mineral Earth", off -> none.
+- [x] Settings page showed "{{1}}" as "1" (Jinja evaluated it); escaped. 
+- [ ] Not verified: real Meta delivery (needs the template approved).

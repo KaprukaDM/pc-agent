@@ -471,8 +471,15 @@
       </div>
       <div class="setting-row">
         <div class="setting-copy">
+          <span class="setting-title">Template greets by name</span>
+          <span class="setting-desc">Tick this if the outreach template has the business name as its one variable, in the header ("Hi &#123;&#123;1&#125;&#125;") or the body. The app then fills it with the partner's name when it sends. Leave unticked for a template with no variable, because WhatsApp rejects values sent to a template that has none.</span>
+        </div>
+        <label class="switch-label"><input type="checkbox" id="setWaTemplateName" aria-label="Template has a name variable"> Header has &#123;&#123;1&#125;&#125; = business name</label>
+      </div>
+      <div class="setting-row">
+        <div class="setting-copy">
           <span class="setting-title">Team alert template name</span>
-          <span class="setting-desc">For alerts to the Partner Central team's own WhatsApp (hot lead, needs a human). WhatsApp only delivers plain text to someone who messaged your business number in the last 24 hours, so register a UTILITY template with one variable, e.g. "PC Agent alert: {{1}}", and put its name here. Empty = plain text, which only arrives inside that 24h window.</span>
+          <span class="setting-desc">For alerts to the Partner Central team's own WhatsApp (hot lead, needs a human). WhatsApp only delivers plain text to someone who messaged your business number in the last 24 hours, so register a UTILITY template with one variable, e.g. "PC Agent alert: &#123;&#123;1&#125;&#125;", and put its name here. Empty = plain text, which only arrives inside that 24h window.</span>
         </div>
         <input type="text" id="setWaAlertTemplate" placeholder="e.g. pc_team_alert" aria-label="Team alert template name">
       </div>
@@ -2347,6 +2354,7 @@ async function loadSettings() {
   $('#setWhatsappLiveLabel').textContent = d.settings.whatsapp_live === '1' ? 'On — live' : 'Off — simulation';
   $('#setWaTemplate').value = d.settings.wa_outreach_template || '';
   $('#setWaTemplateLang').value = d.settings.wa_outreach_template_lang || 'en_US';
+  $('#setWaTemplateName').checked = d.settings.wa_outreach_template_name === '1';
   $('#setWaAlertTemplate').value = d.settings.wa_alert_template || '';
   $('#setWaAlertTemplateLang').value = d.settings.wa_alert_template_lang || 'en_US';
   $('#setOpeningTemplate').value = d.settings.opening_message_template || '';
@@ -2768,6 +2776,7 @@ $('#btnSaveWhatsapp').addEventListener('click', async () => {
     whatsapp_live: live ? '1' : '0',
     wa_outreach_template: $('#setWaTemplate').value.trim(),
     wa_outreach_template_lang: $('#setWaTemplateLang').value.trim() || 'en_US',
+    wa_outreach_template_name: $('#setWaTemplateName').checked ? '1' : '',
     wa_alert_template: $('#setWaAlertTemplate').value.trim(),
     wa_alert_template_lang: $('#setWaAlertTemplateLang').value.trim() || 'en_US',
   });

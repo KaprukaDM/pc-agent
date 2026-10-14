@@ -2115,8 +2115,16 @@ def _send_and_log(partner_id: int, sender: str, body: str, atts: list[dict] | No
             if not template:
                 raise RuntimeError("partner is outside WhatsApp's 24h reply window and no approved outreach "
                                    "template is set (Settings → WhatsApp), so free-form text would be rejected")
+            components = None
+            if settings.get("wa_outreach_template_name") == "1":
+                # 2026-10-14: "Hi {{1}}" header; WhatsApp rejects a template whose variable gets no value
+                with db.conn() as c:
+                    prow = c.execute("SELECT name FROM partners WHERE id = ?", (partner_id,)).fetchone()
+                pname = (prow["name"] if prow and prow["name"] else "there").replace("\n", " ").strip()[:60]
+                components = [{"type": "header", "parameters": [{"type": "text", "text": pname}]}]
             res = notify_whatsapp.send_template(cfg, to, template,
-                                                (settings.get("wa_outreach_template_lang") or "en_US").strip())
+                                                (settings.get("wa_outreach_template_lang") or "en_US").strip(),
+                                                components=components)
             logged_body = f"[sent as approved template '{template}'] {body}"
         if isinstance(res, dict) and res.get("error"):
             raise RuntimeError(res.get("message") or f"WhatsApp API error {res.get('code')}")
@@ -3182,7 +3190,7 @@ def api_settings_update():
     allowed = {"num_categories_per_week", "partners_per_category", "claude_model", "chat_model",
                "pc_team_email", "opening_message_template", "wa_template_cost_usd",
                "pc_team_emails", "pc_team_phones", "whatsapp_live", "wa_outreach_template",
-               "wa_outreach_template_lang", "brief_questions", "wa_alert_template", "wa_alert_template_lang"}
+               "wa_outreach_template_lang", "wa_outreach_template_name", "brief_questions", "wa_alert_template", "wa_alert_template_lang"}
     if "whatsapp_live" in body:
         body["whatsapp_live"] = "1" if str(body["whatsapp_live"]).lower() in ("1", "true", "on") else "0"
     updated = {}

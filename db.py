@@ -325,6 +325,7 @@ DEFAULT_SETTINGS = {
         "Only if they are outside Colombo: are you OK with consignment, sending stock to Kapruka's warehouse?",
     ]),
     "wa_outreach_template_lang": "en_US",
+    "wa_outreach_template_name": "",  # "1" = template has one variable, filled with the business name
     # 2026-10-04, user-authored opening message — went through 5 rounds:
     # (1) "Increase your sales by increasing the visibility among
     # international audience..." (2-para, too long), (2) shortened but
