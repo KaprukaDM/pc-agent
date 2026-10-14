@@ -301,7 +301,7 @@ def _pipeline_phone_tails() -> set[str]:
 # Department-specific vocabulary for the per-department searches. Keyed by
 # the real kapruka_department slugs (confirmed from data_store.sqlite).
 _DEPT_SEARCH_HINTS = {
-    "clothing_fashion": "clothing, fashion labels, apparel, kidswear, sarees, streetwear, socks",
+    "clothing_fashion": "clothing, fashion labels, apparel, kidswear, sarees, modest wear (hijabs, abayas), streetwear, socks",
     "beauty_fragrance": "skincare, natural cosmetics, soap, perfume, haircare, bath products",
     "grocery_fresh": "artisanal food, bakery, chocolate, tea, spices, condiments, preserves, snacks",
     "home_lifestyle": "home decor, ceramics, candles, handloom textiles, furniture, kitchenware",
@@ -672,7 +672,7 @@ Categories:
 """
 
 
-def cluster_daraz_gaps(department: str, model: str = "claude-sonnet-5", limit: int = 30) -> list[list[str]]:
+def cluster_daraz_gaps(department: str, model: str = "claude-sonnet-5", limit: int = 60) -> list[list[str]]:
     """Groups a department's real Daraz category gaps into clusters a single
     real retailer could plausibly fill all at once (user, 2026-10-02, real
     automobile example: Lighting & Electrical / Cooling & Water Pump Tools /
@@ -693,7 +693,7 @@ def cluster_daraz_gaps(department: str, model: str = "claude-sonnet-5", limit: i
     shot. Fail-open: any error returns every gap as its own singleton
     cluster, which degrades gracefully to the old single-category search
     behavior rather than losing the department entirely."""
-    gaps = _daraz_gap_hints_for_department(department, limit=limit)
+    gaps = _daraz_gap_hints_for_department(department, limit=limit, model=model)
     if not gaps:
         return []
     if len(gaps) == 1:
@@ -721,71 +721,201 @@ def cluster_daraz_gaps(department: str, model: str = "claude-sonnet-5", limit: i
         return [[g] for g in gaps]  # fail-open: degrade to one cluster per category
 
 
-def _daraz_gap_hints_for_department(department: str, limit: int = 6) -> list[str]:
-    """Real, named Daraz category gaps for one department, to make a
-    web-search prompt concrete ("find a brand selling X") instead of generic
-    ("find a clothing brand") — see module docstring for why this is worth
-    doing: the gap data already tells you WHAT has proven demand and no
-    Kapruka presence, even though it can never tell you WHO sells it (Daraz's
-    own category/product data carries no seller name at all, confirmed
-    2026-10-02).
+# ------------------------------------------------- gap ranking: fit, not revenue
+# 2026-10-14 (user: "if i didnt noticed will it have caught" Hijabs). Hijabs is a real
+# category_gap (Daraz rev 1.7M, no Kapruka page) but ranked 119 of 274 clothing gaps by
+# revenue, and the search only ever saw the top 30 (T-shirts, boxers, luggage sets...).
+# The hijab brands only appeared because a person added "Hijab" as a missing item.
+# Fix, three parts: (1) clean the list (duplicates, umbrella rows, generic names,
+# categories filed under the wrong department); (2) rank by FIT for an independent
+# specialist brand blended with revenue; (3) cluster a wide window and rotate through
+# the clusters so every gap gets its turn over the weeks (see _pick_gap_cluster).
+GAP_FIT_CACHE_PATH = KOGUL_DIR / "data" / "gap_fit_cache.json"
+GAP_SEEN_PATH = KOGUL_DIR / "data" / "gap_cluster_seen.json"
+GAP_WINDOW = 60            # gaps (best fit first) handed to clustering
+GAP_FIT_POOL = 150         # top-by-revenue gaps (after cleaning) that get a fit score
+GAP_RECENT_DAYS = 35       # a searched gap is "recent" this long
+_GAP_FIT_WEIGHT = 0.65     # blend: fit vs revenue percentile
+_GENERIC_GAP_NAMES = {"clothing", "accessories", "accessory", "others", "other", "misc", "miscellaneous",
+                      "men", "women", "boys", "girls", "kids", "unisex", "sports", "general"}
+# Daraz files some non-fashion lines under fashion-ish breadcrumbs; these roots are
+# someone else's department (bags/luggage, motorcycle gear, tools and protective gear).
+_GAP_OFFDEPT_BREADCRUMBS = {
+    "*": ("> motors", "riding gear", "tools, diy", "protective clothing"),
+    "clothing_fashion": ("bags and travel", "luggage", "backpacks", "wallets", "> eyewear"),
+}
+_GAP_LOCK = threading.Lock()
 
-    Pulls the top category_gap rows by revenue_proxy, EXCLUDES umbrella rows
-    (same bug class sourcing.py already fixes for the main category
-    pipeline — a parent row like "3D Printing" outranking its own leaf
-    "3D Printers" purely by aggregate revenue) and accessory/parts rows
-    (same word-match sourcing.py already applies). Deliberately does NOT run
-    the full worth_pursuing LLM gate here — that would add a second Claude
-    CLI call per department on top of the search call itself, which a timed
-    live test showed was already pushing runtime past what's comfortable
-    (12 departments at up to 240s each). These are just vocabulary
-    SUGGESTIONS fed into the search prompt — judge_brand_fit still does the
-    real giftable/niche/not-commodity judgment on whatever business the
-    search actually finds, so a commodity-sounding hint slipping through
-    here costs nothing but a slightly less sharp search, never a bad card.
+_GAP_FIT_PROMPT = """Kapruka.com (a Sri Lankan gifting and online store) wants to onboard INDEPENDENT Sri Lankan
+specialist brands (small-batch, niche, handcrafted, cultural, giftable, run their own online store). For the
+"{dept_label}" department, rate each Daraz product category below for how well it suits that kind of brand:
 
-    Cached per-process (department gap data doesn't change mid-run)."""
-    if department in _GAP_HINT_CACHE:
-        return _GAP_HINT_CACHE[department]
-    hints: list[str] = []
-    if DB_STORE_PATH.exists():
+5 = a niche or specialist category independent local brands typically make and sell online (e.g. hijabs and
+    abayas, handmade soap, batik and handloom, artisanal chocolate, handmade jewellery)
+4 = a category where independent specialists do well alongside others
+3 = a general category, some independents exist
+2 = mostly big brands or imports, few independents
+1 = a mass commodity or functional/industrial line dominated by large brands or factories (basic t-shirts,
+    cables, safety gloves, generic accessories)
+
+Output ONLY a JSON object mapping each id to its integer rating, no other text, no markdown fences.
+Example: {{"c0": 5, "c1": 1}}
+
+Categories:
+{lines}
+"""
+
+
+def _load_json_file(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_json_file(path: Path, data: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _clean_gap_rows(department: str) -> list[dict]:
+    """All category_gap rows for a department, cleaned: umbrella rows, accessory/parts rows,
+    generic one-word names, other departments' lines and duplicate names removed. Sorted by
+    revenue. [{name, breadcrumb, revenue}]. [] when the store is unavailable."""
+    if not DB_STORE_PATH.exists():
+        return []
+    import sqlite3
+    conn = sqlite3.connect(DB_STORE_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT daraz_name, breadcrumb, revenue_proxy FROM daraz_categories "
+            "WHERE status='category_gap' AND kapruka_department=? ORDER BY revenue_proxy DESC",
+            (department,)).fetchall()
+    finally:
+        conn.close()
+    breadcrumbs = [(r["breadcrumb"] or "") for r in rows]
+    bad_roots = _GAP_OFFDEPT_BREADCRUMBS["*"] + _GAP_OFFDEPT_BREADCRUMBS.get(department, ())
+    if department == "automobile":
+        bad_roots = ()
+    out, seen_names = [], set()
+    for r in rows:
+        name, bc = (r["daraz_name"] or "").strip(), r["breadcrumb"] or ""
+        low = name.lower()
+        if not name or low in _GENERIC_GAP_NAMES or low in seen_names:
+            continue
+        if any(other.startswith(bc + " > ") for other in breadcrumbs if other != bc):
+            continue  # umbrella: a parent whose own leaf is also in the list
+        if set(re.findall(r"[a-z]+", low)) & _GAP_EXCLUDE_WORDS:
+            continue
+        if any(root in bc.lower() for root in bad_roots):
+            continue
+        seen_names.add(low)
+        out.append({"name": name, "breadcrumb": bc, "revenue": r["revenue_proxy"] or 0})
+    return out
+
+
+def _score_gap_fit(department: str, names: list[str], model: str) -> dict[str, int]:
+    """1-5 brand-suitability per category name, one batched model call per department,
+    cached on disk (names are stable) so each name is scored once. Fail-open: a missing
+    score is treated as neutral 3, so a failed call degrades to revenue ordering."""
+    with _GAP_LOCK:
+        cache = _load_json_file(GAP_FIT_CACHE_PATH)
+    dept_cache = cache.get(department, {})
+    todo = [n for n in names if n not in dept_cache]
+    if todo:
+        dept_label = department.replace("_", " / ").replace("-", " ")
+        ids = {f"c{i}": n for i, n in enumerate(todo)}
+        lines = "\n".join(f'- id "{cid}": "{n}"' for cid, n in ids.items())
         try:
-            import sqlite3
-            conn = sqlite3.connect(DB_STORE_PATH)
-            conn.row_factory = sqlite3.Row
-            try:
-                rows = conn.execute(
-                    "SELECT daraz_name, breadcrumb FROM daraz_categories "
-                    "WHERE status='category_gap' AND kapruka_department=? "
-                    "ORDER BY revenue_proxy DESC LIMIT 40",
-                    (department,)
-                ).fetchall()
-            finally:
-                conn.close()
-            breadcrumbs = [(r["breadcrumb"] or "") for r in rows]
-            for r in rows:
-                bc = r["breadcrumb"] or ""
-                is_umbrella = any(other.startswith(bc + " > ") for other in breadcrumbs if other != bc)
-                if is_umbrella:
-                    continue
-                name_words = set(re.findall(r"[a-z]+", (r["daraz_name"] or "").lower()))
-                if name_words & _GAP_EXCLUDE_WORDS:
-                    continue
-                # Daraz taxonomy labels occasionally carry an internal
-                # abbreviation as the last word (e.g. "Womens Fashion
-                # Watches Wsj"). Left as-is deliberately: this is just prompt
-                # vocabulary for a web search, not a matching key, and every
-                # stripping rule tried here risked mangling a real short
-                # category word ("Mens Set") more than the rare abbreviation
-                # hurt the search — a model reading the prompt handles an
-                # odd trailing word like "Wsj" fine from context.
-                hints.append(r["daraz_name"])
-                if len(hints) >= limit:
-                    break
+            raw = run_claude_cli(_GAP_FIT_PROMPT.format(dept_label=dept_label, lines=lines), model=model, timeout=240)
+            data = extract_json(raw)
+            if isinstance(data, dict):
+                for cid, n in ids.items():
+                    v = data.get(cid)
+                    if isinstance(v, (int, float)) and 1 <= v <= 5:
+                        dept_cache[n] = int(v)
         except Exception:
-            hints = []  # fail-open: the search prompt just falls back to generic department vocabulary
+            pass
+        with _GAP_LOCK:
+            cache = _load_json_file(GAP_FIT_CACHE_PATH)
+            cache.setdefault(department, {}).update({n: v for n, v in dept_cache.items()})
+            _save_json_file(GAP_FIT_CACHE_PATH, cache)
+    return {n: dept_cache.get(n, 3) for n in names}
+
+
+def _ranked_gaps(department: str, model: str = "claude-sonnet-5") -> list[dict]:
+    """Cleaned gaps ranked best-first by a blend of brand fit (65%) and revenue percentile (35%):
+    [{name, breadcrumb, revenue, fit, score}]. Revenue alone put T-shirts first and hijabs 119th."""
+    rows = _clean_gap_rows(department)[:GAP_FIT_POOL]
+    if not rows:
+        return []
+    fit = _score_gap_fit(department, [r["name"] for r in rows], model)
+    n = len(rows)
+    for i, r in enumerate(rows):  # rows are revenue-ordered, so i/n is the revenue percentile
+        r["fit"] = fit[r["name"]]
+        r["score"] = round(_GAP_FIT_WEIGHT * (r["fit"] - 1) / 4 + (1 - _GAP_FIT_WEIGHT) * (1 - i / n), 4)
+    rows.sort(key=lambda r: -r["score"])
+    return rows
+
+
+def _daraz_gap_hints_for_department(department: str, limit: int = GAP_WINDOW,
+                                    model: str = "claude-sonnet-5") -> list[str]:
+    """The department's best real Daraz gaps for the search, best fit first (see the block comment
+    above). Cached per process. Fail-open to [] so the search falls back to generic department
+    vocabulary; never blocks sourcing."""
+    if department in _GAP_HINT_CACHE:
+        return _GAP_HINT_CACHE[department][:limit]
+    try:
+        hints = [r["name"] for r in _ranked_gaps(department, model)]
+    except Exception:
+        hints = []
     _GAP_HINT_CACHE[department] = hints
-    return hints
+    return hints[:limit]
+
+
+def _gap_scores(department: str) -> dict[str, float]:
+    try:
+        return {r["name"]: r["score"] for r in _ranked_gaps(department)}
+    except Exception:
+        return {}
+
+
+def _pick_gap_cluster(department: str, clusters: list[list[str]]) -> list[str]:
+    """Which cluster this week's search targets. Each cluster is scored by its members' mean fit
+    score (plus a small bonus for covering several gaps at once) times how FRESH it is: gaps already
+    searched in the last GAP_RECENT_DAYS are discounted, so the best cluster leads first and every
+    other cluster gets its turn on later weeks instead of the same few repeating. Memory is per
+    gap name (the model's cluster boundaries differ run to run). Records the pick."""
+    if not clusters:
+        return []
+    import datetime
+    scores = _gap_scores(department)
+    today = datetime.date.today()
+    with _GAP_LOCK:
+        seen = _load_json_file(GAP_SEEN_PATH).get(department, {})
+
+    def fresh(name: str) -> float:
+        d = seen.get(name)
+        try:
+            age = (today - datetime.date.fromisoformat(d)).days if d else 999
+        except ValueError:
+            age = 999
+        return 1.0 if age >= GAP_RECENT_DAYS else 0.15 + 0.85 * age / GAP_RECENT_DAYS
+
+    def value(c: list[str]) -> float:
+        mean = sum(scores.get(n, 0.3) for n in c) / len(c)
+        return (mean + 0.05 * min(len(c) - 1, 4)) * (sum(fresh(n) for n in c) / len(c))
+
+    best = max(clusters, key=value)
+    with _GAP_LOCK:
+        data = _load_json_file(GAP_SEEN_PATH)
+        data.setdefault(department, {}).update({n: today.isoformat() for n in best})
+        _save_json_file(GAP_SEEN_PATH, data)
+    return best
 
 
 _SEARCH_PROMPT_TEMPLATE = """Use web search to find {n} real, independent Sri Lankan (or Sri Lankan
@@ -1008,7 +1138,7 @@ def _web_search_for_brands(n: int, exclude_urls: set[str], model: str,
         # not covering the literal taxonomy label. Reworded as a bonus/signal
         # rather than a requirement.
         clusters = cluster_cache.get(dept, [])
-        best_cluster = clusters[0] if clusters else []
+        best_cluster = _pick_gap_cluster(dept, clusters)
         if len(best_cluster) >= 2:
             gap_block = (f"BONUS: Kapruka specifically has NO products in these proven-demand Daraz "
                          f"categories, and one real retailer could plausibly stock SEVERAL of them "

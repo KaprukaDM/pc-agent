@@ -1753,3 +1753,13 @@ ai replying or human has taken over".
 - [x] New setting wa_outreach_template_name ("Template greets by name" checkbox): when on, the template send passes the partner's name as the header variable; off = no components. Verified with a stubbed send: on -> header param "Mineral Earth", off -> none.
 - [x] Settings page showed "{{1}}" as "1" (Jinja evaluated it); escaped. 
 - [ ] Not verified: real Meta delivery (needs the template approved).
+
+## 2026-10-14 — Opportunity-driven search must not depend on someone noticing (user: "if i didnt noticed will it have caught" Hijabs; "yes please do all these")
+Finding: Hijabs is a category_gap (Daraz rev 1.7M) but ranks 119/274 in clothing_fashion; search only gets the top 30 by revenue (T-shirts, boxers, luggage...). Hijab brands only came via the manual missing-items route.
+- [x] 1. Drop duplicate / umbrella / off-department gaps (repeated "Clothing", bags/luggage/motorcycle gear inside clothing).
+- [x] 2. Rank by fit, not revenue: one batched model call per department scores each gap for independent-brand suitability (niche/specialist vs mass commodity); combine with revenue.
+- [x] 3. Widen window (top ~60 by fit) and cluster those; pick the cluster to search with rotation memory so every cluster gets its turn over the weeks.
+- [ ] Verify: Hijabs enters a modest-wear cluster; simulate N weeks of picks; run a real clothing search on that cluster and see whether hijab brands come back.
+
+- Verified (clothing_fashion): cleaning 274 -> 170 gaps; Hijabs rank 119 -> 2 by fit+revenue; clustering puts Hijabs in a modest/ethnic-wear cluster; 12-week rotation simulation picks it weeks 1,5,9 and rotates 5 of 8 clusters.
+- [ ] Real web search on that cluster (running) — result to be recorded. Other 11 departments' fit scores are computed on first weekly run (cached in data/gap_fit_cache.json).
