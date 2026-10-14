@@ -1743,3 +1743,8 @@ ai replying or human has taken over".
 - [x] Brand value scored on combined followers, Sri Lanka scale (10k+ = high; 3k+ with press/stockists = high). Nuts on Top -> high, verdict Lucrative.
 - [x] Startup pass upgrades existing reports: followers refreshed on all 67 pending (unreadable profiles left: 4 IG, 3 TikTok, 1 FB); cards without an exact product list queued for rebuild once (hosts_checked marker).
 - [ ] Watch: 44/67 now "high" — threshold may need raising if it stops separating brands.
+
+## 2026-10-14 — Kogul confirms researched facts (user: "let kogul also ask and just clarify")
+- [x] Known facts are no longer silently dropped: first brief step is ONE message stating what research found (sells / product count / location) and asking to confirm or correct; their correction wins; no one-by-one re-asking. brain.brief_block + app_kogul._known_facts_for_partner wording.
+- [x] Verified with real gpt-4o chats, run twice (2 businesses each): confirmation in one message 2/2 and 2/2; partner correction (389 -> 450) used.
+- [x] 2026-10-14 opening message replaced with user's 'new intro' (db.py default + local DB + VPS DB setting); {category} fills e.g. 'Grocery & Fresh Food'; no business name in the greeting.

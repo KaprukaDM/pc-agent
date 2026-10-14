@@ -344,11 +344,11 @@ DEFAULT_SETTINGS = {
     # "kogul intro") — supersedes the above iteration; kept as a multi-line
     # WhatsApp-style message (greeting, context, soft CTA) rather than the
     # single-line version.
+    # (7) 2026-10-14, user-provided replacement ("kogul new intro message"), pasted verbatim;
+    # a second, shorter version followed the same day and is the current one.
     "opening_message_template": (
-        "Hi {business_name}! \U0001F44B I'm Kogul from Kapruka Partner Central.\n\n"
-        "We're currently looking to onboard more {category} sellers and help them reach "
-        "customers in Sri Lanka and overseas through Kapruka.\n\n"
-        "Interested? I can tell you how it works."
+        "Hi {business_name} \U0001F44B I'm Kogul from Kapruka Partner Central.\n\n"
+        "Would you like to become a Kapruka Partner and boost your sales and earnings?"
     ),
 }
 

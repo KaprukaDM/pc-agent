@@ -1690,10 +1690,10 @@ def _known_facts_for_partner(partner_id: int) -> dict:
     if profile.get("product_types"):
         facts.append("- What they sell: " + "; ".join(t.get("kind") or t.get("search") for t in profile["product_types"]))
     if catalog.get("count") is not None:
-        facts.append(f"- Product count: {catalog['count']} products on their online store (so don't ask how many)")
+        facts.append(f"- Product count: {catalog['count']} products on their online store (confirm this number, don't ask how many)")
     if profile.get("location") and profile.get("location_source") in ("website", "google"):
         facts.append(f"- Based in: {profile['location']} (from their {'website' if profile['location_source'] == 'website' else 'Google listing'})"
-                     + (" — within Colombo District, so don't ask about consignment" if profile.get("in_colombo") == "yes" else ""))
+                     + (" — within Colombo District, so no need to ask about consignment" if profile.get("in_colombo") == "yes" else ""))
     researched_loc = profile.get("location") if profile.get("location_source") in ("website", "google") else None
     return {"text": "\n".join(facts), "location": researched_loc,
             "in_colombo": profile.get("in_colombo") if researched_loc else None,

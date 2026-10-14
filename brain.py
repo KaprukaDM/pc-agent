@@ -168,14 +168,21 @@ def brief_block(partner_questions: list[str] | None = None, known: dict | None =
     qs = _skip_known(standard_brief_questions(), known) + [q for q in (partner_questions or []) if q.strip()]
     slots = slots or call_slots()
     lines = "\n".join(f"{i}. {q}" for i, q in enumerate(qs, 1)) or "(nothing left to ask: go to the call)"
-    known_txt = (f"\nALREADY KNOWN from our research (don't ask these again; at most confirm in passing):\n"
-                 f"{known['text']}\n") if known.get("text") else ""
+    # 2026-10-14, user: "let kogul also ask and just clarify": known facts are not dropped
+    # silently; the first brief step is ONE short confirmation of what research found.
+    known_txt = (f"\nALREADY KNOWN from our research:\n{known['text']}\n"
+                 "FIRST BRIEF STEP, once they show interest: send ONE short message that states these facts "
+                 "in a sentence and asks them to confirm or correct them (e.g. \"From what we found, you're "
+                 "in Colombo 04 with about 13 products, mainly chocolate bars. Is that right?\"). Mention only "
+                 "the facts listed above, nothing invented. If they confirm, treat them as settled and never "
+                 "ask them again one by one. If they correct something, use THEIR version. Then continue "
+                 "with the questions below.\n") if known.get("text") else ""
     slot_lines = "\n".join(f"  {i}. {s}" for i, s in enumerate(slots, 1))
     return f"""
 === THE BRIEF (collect once the partner shows interest) ===
 After the opening, if they are interested or want to know more, collect this brief before going
 deep into registration. ONE question per message, in this order. Skip any question they have
-already answered anywhere in the chat, anything ALREADY KNOWN below, and a question whose condition
+already answered anywhere in the chat, anything ALREADY KNOWN below (those get the one confirmation step instead), and a question whose condition
 doesn't apply. If they ask you something, answer it first (briefly), then continue.
 "Colombo" means Colombo District: {COLOMBO_DISTRICT}. A place in that list is NOT outside Colombo.
 {lines}
