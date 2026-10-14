@@ -1868,7 +1868,9 @@ def _run_report_build(job_id: str, category_id: int, force_kapruka: bool, force_
         rep = dict(rep) if rep else {}
 
         catalog = _loads(rep.get("catalog_json"), None)
-        if catalog is None or force_site or catalog.get("count") is None \
+        short_titles = bool(catalog and catalog.get("count") and "store" in str(catalog.get("source") or "")
+                            and len(catalog.get("titles") or []) < min(catalog["count"], 400))
+        if catalog is None or force_site or catalog.get("count") is None or short_titles \
                 or "sitemap" in str(catalog.get("source") or ""):  # no exact list yet: always re-check (cheap)
             catalog = partner_report.store_catalog(card.get("url"), card.get("ecommerce_platform"))
         site = _loads(rep.get("site_json"), None)
@@ -1889,17 +1891,31 @@ def _run_report_build(job_id: str, category_id: int, force_kapruka: bool, force_
             research = partner_report.refresh_followers(research, card.get("social_links"))
 
         profile = _loads(rep.get("profile_json"), {})
+        prev_profile = profile
         try:
             profile = partner_report.extract_profile(card, catalog, conv, brain.standard_brief_questions() + qs,
                                                      site_text=site.get("snippets", ""))
         except Exception as e:
             errors.append(f"summary/analysis failed: {str(e)[:200]}")
 
+        # 2026-10-14: ranges are decided once per store catalog. Re-extracting them on every
+        # rebuild reworded the range and its search words, and Nuts on Top's truffle count
+        # swung 85 -> 39 between two runs. Same product list = same ranges; a changed list
+        # (or "rebuild from site") decides them again.
+        ranges_key = partner_report.catalog_key(catalog)
+        if (not force_site and ranges_key and prev_profile.get("ranges_key") == ranges_key
+                and prev_profile.get("product_types") and all("examples" in t for t in prev_profile["product_types"])):
+            profile["product_types"] = prev_profile["product_types"]
+        profile["ranges_key"] = ranges_key
+
         kapruka = _loads(rep.get("kapruka_json"), [])
         terms = profile.get("product_types") or []
+        if terms:  # their side of the comparison: each range counted from their real store titles
+            terms = partner_report.count_their_ranges(terms, catalog.get("titles") or [], catalog.get("count"))
+            profile["product_types"] = terms
         old_method = not any(k.get("method") == partner_report.KAPRUKA_CHECK_METHOD
                              for k in partner_report.split_kapruka(kapruka)[0])
-        if terms and (force_kapruka or old_method or json.dumps(terms) != rep.get("kapruka_terms")):
+        if terms and (force_kapruka or old_method or partner_report.terms_key(terms) != rep.get("kapruka_terms")):
             kapruka = partner_report.kapruka_check(terms, brand=card.get("name") or card.get("concept"))
 
         if not has_qs:
@@ -1921,7 +1937,7 @@ def _run_report_build(job_id: str, category_id: int, force_kapruka: bool, force_
                 "msg_count=excluded.msg_count, built_at=excluded.built_at",
                 (category_id, json.dumps(catalog), json.dumps(site), json.dumps(research) if research is not None else None,
                  json.dumps(profile) if profile else None,
-                 json.dumps(kapruka), json.dumps(terms), "; ".join(errors) or None, len(conv), db.now()))
+                 json.dumps(kapruka), partner_report.terms_key(terms), "; ".join(errors) or None, len(conv), db.now()))
         with _JOBS_LOCK:
             _JOBS[job_id] = {"status": "done", "error": "; ".join(errors) or None}
     except Exception as e:

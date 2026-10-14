@@ -1777,3 +1777,13 @@ Measured: old check read only page 1 of Kapruka search (<=20 results) then kept 
 - Verified live (standalone, real Kapruka + gpt-4o): Wrook candle: 46 of their kind, 90 candles in all (was 'only 2'), verdict no longer a false gap; brand not on Kapruka. Nuts on Top: chocolate bar 11 of their kind / 122 in all (KitKat/Snickers judged other kind); truffle 16 / 196; brand not on Kapruka. Nuts on Top moved to new Chocolates department.
 - Known weakness: category totals can include near-misses the judge files as 'other kind' (candle holders, number candles, a truffle cake). Their-kind counts looked right.
 - [ ] Rebuild of all old-method reports queued at startup (serialized Kapruka, ~1-2 min each).
+
+## 2026-10-14 — Like-for-like gap comparison (user: "make sure the gap analysis is super strong and accurate ... their catalog count and kapruka count of actual ... their category named oil can be skin care, kapruka oil search gives cooking/coconut oil — not apples to apples")
+- [x] Ranges named unambiguously for a general store ("face oil", not "oil") + real example titles from their catalog.
+- [x] Their count per range: classify every catalog title into a range (not the model's guess).
+- [x] Kapruka judge compares against THEIR example products; keep excluded examples ("not counted: coconut cooking oil").
+- [x] Ambiguity guard: generic term mostly another category -> flagged, specific terms carry it.
+- [x] Report: side-by-side Theirs | Kapruka their kind | Kapruka category, + excluded.
+- [x] Verify on Wrook, Nuts on Top, and an oil/skincare brand.
+- Verified end-to-end through the app build (real Kapruka + gpt-4o): Wrook candle theirs 38 vs Kapruka 49 their kind (30 other kind, 102 not counted). Ceylon Elements 'Oil' range searched as 'face oil' (flagged ambiguous), theirs 11 vs Kapruka 7 -> real gap; face wash theirs 3 vs 5 -> thin. Nuts on Top chocolate bar theirs 3 vs Kapruka 71 their kind; truffles 3 vs 37. Rebuilt twice: identical (ranges reused per catalog).
+- Bugs found by testing and fixed: 'theirs' was 3 for every range (range description carried 3 example names, model counted only those); truffle count swung 85 -> 39 between runs (ranges re-extracted each rebuild) -> ranges now fixed per store catalog; judge at temperature 0 in batches of 60.

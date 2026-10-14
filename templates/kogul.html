@@ -3074,6 +3074,7 @@ function _kapLine(k) {
   if (k.verdict === 'failed') return 'search failed';
   const cat = _kapCat(k);
   if (k.verdict === 'none') return k.category_exists ? (cat ? `Kapruka has ${cat}, none of their kind` : 'Kapruka has the category, not their kind') : 'not on Kapruka at all';
+  if (k.their_products != null && k.count != null) return `theirs ${fmtNum(k.their_products)} · Kapruka ${fmtNum(k.count)} of their kind` + (cat ? ` (${cat} in all)` : '');
   if (k.verdict === 'thin') return cat ? `Kapruka has ${cat}, only ${fmtNum(k.count)} of their kind` : `only ${fmtNum(k.count)} of their kind on Kapruka`;
   return `Kapruka has ${fmtNum(k.count)} of their kind` + (cat ? ` (${cat} in all)` : '');
 }
@@ -3231,10 +3232,18 @@ function renderPartnerReport(d) {
           <div class="cnt">${k.count == null ? '—' : fmtNum(k.count)}${k.category_count != null ? `<small>of ${fmtNum(k.category_count)}${k.full_page ? '+' : ''}</small>` : ''}</div>
           <span class="kap-pill ${cls}">${lbl}</span>
           <a class="link" target="_blank" rel="noopener" href="${safeUrl(k.search_url)}">Kapruka ↗</a>
-          ${k.kind ? `<div class="samples"><strong>Theirs:</strong> ${escapeHtml(k.kind)}</div>` : ''}
+          ${k.count != null ? `<div class="kap-cmp">
+            <div><span>Theirs</span><b>${k.their_products != null ? fmtNum(k.their_products) : '—'}</b><small>${escapeHtml(k.their_count_note || '')}</small></div>
+            <div><span>Kapruka, their kind</span><b>${fmtNum(k.count)}</b><small>a real alternative to theirs</small></div>
+            <div><span>Kapruka, same type, other kind</span><b>${k.category_count != null ? fmtNum(k.category_count - k.count) : '—'}</b><small>e.g. mass-market versions</small></div>
+            <div><span>Not counted</span><b>${k.unrelated_count != null ? fmtNum(k.unrelated_count) : '—'}</b><small>matched the words, not the product</small></div>
+          </div>` : ''}
+          ${k.ambiguous_term ? `<div class="samples kap-amb">"${escapeHtml(k.term)}" alone mostly finds other products on Kapruka, so the count leans on the searches for their kind.</div>` : ''}
+          ${k.kind ? `<div class="samples"><strong>Theirs:</strong> ${escapeHtml(k.kind)}${(k.examples || []).length ? ` — e.g. ${k.examples.slice(0, 4).map(escapeHtml).join(' · ')}` : ''}</div>` : ''}
           ${(k.samples || []).length ? `<div class="samples"><strong>Same kind on Kapruka:</strong> ${k.samples.map(s => `<a target="_blank" rel="noopener" href="${safeUrl(s.url)}">${escapeHtml(s.title)}</a>`).join(' · ')}</div>`
             : ''}
           ${(k.category_samples || []).length ? `<div class="samples"><strong>Same category, other kind:</strong> ${k.category_samples.map(s => `<a target="_blank" rel="noopener" href="${safeUrl(s.url)}">${escapeHtml(s.title)}</a>`).join(' · ')}</div>` : ''}
+          ${(k.excluded_samples || []).length ? `<div class="samples"><strong>Not counted (not their product):</strong> ${k.excluded_samples.map(s => `<a target="_blank" rel="noopener" href="${safeUrl(s.url)}">${escapeHtml(s.title)}</a>`).join(' · ')}</div>` : ''}
           ${(k.terms_tried || []).length ? `<div class="samples muted"><strong>Searched:</strong> ${k.terms_tried.map(escapeHtml).join(', ')}${k.partial ? ' (stopped early: ' + escapeHtml(k.error || '') + ')' : ''}</div>` : ''}
         </div>`; }).join('')}</div>`
         : '<p class="muted">Not searched yet.</p>'}

@@ -104,7 +104,7 @@ _OPENAI_SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 
 
 def run_openai_chat_text(prompt: str, model: str = "gpt-4o", timeout: int = 60,
-                          caller: str = "kogul.openai_chat") -> str:
+                          caller: str = "kogul.openai_chat", temperature: float = 0.4) -> str:
     """Same (prompt, model, timeout) -> str shape as run_claude_cli, so the
     two call sites that use it (Chat with PC Agent, partner replies) barely
     change — 2026-10-04, user: "let kogul use open ai key to respond" (chat
@@ -136,7 +136,7 @@ def run_openai_chat_text(prompt: str, model: str = "gpt-4o", timeout: int = 60,
         resp = call_openai_chat(
             api_key=api_key, model=model,
             messages=[{"role": "user", "content": prompt}],
-            caller=caller, temperature=0.4, timeout=timeout)
+            caller=caller, temperature=temperature, timeout=timeout)  # 0 for judging/counting calls (2026-10-14)
     except Exception as e:
         raise RuntimeError(f"OpenAI chat call failed: {e}")
     try:
