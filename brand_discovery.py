@@ -662,6 +662,13 @@ categories that merely share a word are NOT automatically the same retailer (e.g
 else is its own cluster of one — don't force unrelated categories together just to make a bigger
 cluster.
 
+2026-10-14 SIZE AND FOCUS RULE: keep every cluster to at most 6 categories that ONE specialist shop
+would really carry together, and split bigger groups by what the shop actually sells. For example
+hijabs, abayas and other modest wear are one cluster; salwar kameez, kurtis and sherwanis are another;
+bridal and wedding wear another; baby clothing another. A cluster that mixes different specialities
+sends the search to the wrong kind of business. Put the most brand-suited, specific category first
+inside each cluster. Still ordered with your most confident clusters first.
+
 Below is the full gap list for this department, each with an id. Output ONLY a JSON array of
 clusters, each cluster an array of the ids that belong together, covering every id exactly once,
 ordered with your BIGGEST/most confident multi-category clusters FIRST. No other text, no markdown
@@ -904,7 +911,9 @@ def _pick_gap_cluster(department: str, clusters: list[list[str]]) -> list[str]:
             age = (today - datetime.date.fromisoformat(d)).days if d else 999
         except ValueError:
             age = 999
-        return 1.0 if age >= GAP_RECENT_DAYS else 0.15 + 0.85 * age / GAP_RECENT_DAYS
+        # Rotation: freshness keeps growing with age (capped at 120 days), so a gap never searched
+        # (3.4x) beats one searched 5 weeks ago (1.0x) and every cluster gets a turn before any repeats.
+        return max(0.15, min(age, 120) / GAP_RECENT_DAYS)
 
     def value(c: list[str]) -> float:
         mean = sum(scores.get(n, 0.3) for n in c) / len(c)
