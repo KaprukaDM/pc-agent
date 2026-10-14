@@ -960,3 +960,9 @@ body.no-scroll { overflow: hidden; }
 .reply-mode.waiting { background: var(--red-tonal); border-color: #f4c7c3; }
 .reply-mode.waiting strong { color: var(--red); }
 .reply-mode.closed { background: var(--surface-alt); }
+
+/* 2026-10-14 deep Kapruka check: category total beside the their-kind count, brand-already-sold warning */
+.rpt-kap-row .cnt small { display: block; font-weight: 400; font-size: 11px; color: var(--muted, #667085); }
+.rpt-warn { margin: 8px 0 12px; padding: 10px 12px; border-radius: 8px; font-size: 13px; line-height: 1.45;
+  background: var(--amber-tonal); color: var(--amber); border: 1px solid currentColor; }
+.rpt-warn a { color: inherit; text-decoration: underline; }

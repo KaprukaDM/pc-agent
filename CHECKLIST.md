@@ -1764,3 +1764,16 @@ Finding: Hijabs is a category_gap (Daraz rev 1.7M) but ranks 119/274 in clothing
 - Verified (clothing_fashion): cleaning 274 -> 170 gaps; Hijabs rank 119 -> 2 by fit+revenue; clustering puts Hijabs in a modest/ethnic-wear cluster; 12-week rotation simulation picks it weeks 1,5,9 and rotates 5 of 8 clusters.
 - [x] Real web search verified. First try (19-category ethnic-wear cluster) returned saree/salwar/tailor shops, NOT hijab brands -> clustering now capped at 6 specialist categories. Forced search on the tight hijab cluster returned Aayla Hijabs + HijAbaya (the two found by hand). Unforced run on the top cluster also surfaced hijabaya.lk.
 - [x] Rotation bug found by simulation (hijab cluster never picked in 24 weeks: strong clusters kept winning every 5 weeks) -> freshness now grows with age so never-searched clusters go first. Re-simulated: hijab cluster picked in week 5 (and 18); 12 of 14 clusters searched in the first 14 weeks. Other 11 departments' fit scores are computed on first weekly run (cached in data/gap_fit_cache.json).
+
+## 2026-10-14 — Robust Kapruka gap analysis (user: "kapruka has many candles not only 2 ... first identify their kind and search their kind ... sometimes their kind can be the brand name ... come up with robust system"; "nuts on top is a chocolate department fix in the code level")
+Measured: old check read only page 1 of Kapruka search (<=20 results) then kept exact-kind matches. Paging the real site search (&p=N&onlyCatalogueSection=true, 32/page, stops ~182): "candle" = 102 candle titles, 13 soy candles (report said 2); "chocolate bar" = 43 bar titles (report said 6). Doofinder 429 "Search not available" — user: don't use Doofinder.
+- [x] Deep Kapruka search: page the site search (generic term up to 6 pages, their-kind terms 2 pages), dedupe.
+- [x] Profile names their KIND as shopper search terms (kind_terms) per range.
+- [x] Judge every result: same kind / same category other kind / unrelated; report both numbers (Kapruka has N <category>, M of their kind).
+- [x] Brand check: search their brand name on Kapruka; if Kapruka already sells it, say so in the verdict.
+- [x] Add a Chocolates department (Kapruka has /online/chocolates); move Nuts on Top and other chocolate makers there.
+- [ ] Rebuild existing reports' Kapruka checks (serialized, polite).
+- [ ] Verify on Wrook (candles) and Nuts on Top (chocolate) against the measured numbers.
+- Verified live (standalone, real Kapruka + gpt-4o): Wrook candle: 46 of their kind, 90 candles in all (was 'only 2'), verdict no longer a false gap; brand not on Kapruka. Nuts on Top: chocolate bar 11 of their kind / 122 in all (KitKat/Snickers judged other kind); truffle 16 / 196; brand not on Kapruka. Nuts on Top moved to new Chocolates department.
+- Known weakness: category totals can include near-misses the judge files as 'other kind' (candle holders, number candles, a truffle cake). Their-kind counts looked right.
+- [ ] Rebuild of all old-method reports queued at startup (serialized Kapruka, ~1-2 min each).

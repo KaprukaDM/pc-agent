@@ -514,6 +514,8 @@ Rules:
             "handmade natural soap bars (Turmeric, Charcoal, Coffee Scrub)" vs supermarket soap.
     "products": how many of their products are in this range (from the collection count, or count
             the matching titles), integer or null.
+    "kind_terms": 1-2 short phrases (2-3 words) a shopper types to find THEIR kind specifically,
+            e.g. ["soy candle", "scented candle"] or ["artisan chocolate", "dark chocolate bar"]. No brand.
 - "products_seen_on_website": REQUIRED when the store product titles above say "not available":
   count the DISTINCT product names the website snippets show with a price (the same product
   repeated counts once), e.g. "Rose Tea LKR 900 ... Mint Tea LKR 950 ... Rose Tea LKR 900" = 2.
@@ -536,7 +538,7 @@ Rules:
 - "analysis": only if there is a real conversation (a partner message exists), else null.
 
 Output ONLY JSON:
-{{"about": "...", "product_types": [{{"search": "...", "kind": "...", "products": null}}], "sku_count_stated": null, "location": null,
+{{"about": "...", "product_types": [{{"search": "...", "kind": "...", "products": null, "kind_terms": ["..."]}}], "sku_count_stated": null, "location": null,
 "location_source": null, "in_colombo": "unknown", "consignment": "unknown", "products_seen_on_website": null,
 "answers": [{{"question": "<exactly as listed>", "answer": "<their answer, short>" or null}}],
 "analysis": {{"summary": "<2 sentences on where the chat stands>", "interest_level": "high|medium|low|unclear",
@@ -569,9 +571,10 @@ def extract_profile(card: dict, catalog: dict, conversation: list[dict], questio
             t = {"search": t.strip(), "kind": t.strip(), "products": None}
         if isinstance(t, dict) and str(t.get("search") or "").strip():
             n = t.get("products")
+            kt = [str(x).strip().lower() for x in (t.get("kind_terms") or []) if str(x).strip()][:2]
             types.append({"search": str(t["search"]).strip().lower(),
                           "kind": str(t.get("kind") or t["search"]).strip(),
-                          "products": n if isinstance(n, int) else None})
+                          "products": n if isinstance(n, int) else None, "kind_terms": kt})
     types = types[:MAX_PRODUCT_TYPES]
     sku = data.get("sku_count_stated")
     try:
@@ -596,82 +599,179 @@ def extract_profile(card: dict, catalog: dict, conversation: list[dict], questio
 
 # ---------------------------------------------------------------- 3. Kapruka live check
 
-_RELEVANCE_PROMPT = """Kapruka's own site search was run for each of a Sri Lankan business's product
-ranges. For each range, keep only the Kapruka titles that are the SAME KIND as what this business
-makes (described under "theirs"): a shopper wanting THEIR product would accept it as an equivalent.
-Same category is not enough: if theirs is "handmade natural soap bars", mass-market soaps like
-Dettol, Lux or Khomba are NOT the same kind; "hair removal cold wax" is not hair styling wax;
-"chocolate chip cake" is not a chocolate bar.
+# 2026-10-14 rebuild (user: "kapruka has many candles not only 2 ... first identify their kind and
+# search their kind ... sometimes their kind can be the brand name ... come up with robust system").
+# Measured on the live site the same day: the old check read only page 1 of Kapruka's search
+# (<= 20 results) and then kept exact-kind matches, so Wrook's candles came out "only 2" while
+# paging the same search shows 102 candles (13 soy), and Nuts on Top's "6 chocolate bars" was
+# really 43. Now: page the site search deep (32 results a page via the same "View more" call
+# the storefront makes, ~180 max), also search THEIR KIND's own terms and THEIR BRAND NAME,
+# then judge every result as same kind / same category (other kind) / unrelated, and report
+# both numbers. Doofinder is not used (user: not reliable; it also answered 429).
+KAPRUKA_PAGES_GENERIC = 6      # the site search stops at ~6 pages (measured)
+KAPRUKA_PAGES_KIND = 2
+KAPRUKA_DEEP_TYPES = 3         # biggest ranges get the deep search; Cloudflare budget
+KAPRUKA_CHECK_METHOD = "deep-v2"
 
-{blocks}
 
-Output ONLY JSON: {{"<range id>": ["<title id>", ...], ...}} listing the title ids to keep."""
+def _kapruka_pages(term: str, max_pages: int, session=None) -> dict:
+    """Kapruka's own site search, paged like the storefront's "View more" button
+    (&p=N&onlyCatalogueSection=true). {ok, products[{title,url}], pages, capped, error}.
+    Only real product links (/buyonline/...) count; promo tiles are skipped.
+    A 429 stops paging and keeps what was read (ok only if page 1 was read)."""
+    import html as _html
+    import requests
+    import kapruka_live_verify as klv
+    sess = session or requests.Session()
+    seen, prods, pages, err = set(), [], 0, None
+    for p in range(1, max_pages + 1):
+        params = {"d": term} if p == 1 else {"d": term, "p": p, "onlyCatalogueSection": "true"}
+        klv._polite_sleep()
+        try:
+            r = sess.get(klv.SEARCH_URL, params=params, headers=klv.HEADERS, timeout=30)
+        except Exception as e:
+            klv._mark_request_done()
+            err = str(e)[:150]
+            break
+        klv._mark_request_done()
+        if r.status_code == 429:
+            err = "Kapruka rate limit (429): stopped paging"
+            break
+        if r.status_code != 200:
+            err = f"HTTP {r.status_code}"
+            break
+        new = 0
+        for url, _img, alt in klv.CARD_URL_IMAGE_TITLE_RE.findall(r.text):
+            url = _html.unescape(url)
+            title = klv.TITLE_SUFFIX_RE.sub("", _html.unescape(alt)).strip()
+            if "/buyonline/" not in url or not title or url in seen:
+                continue
+            seen.add(url)
+            prods.append({"title": title, "url": url})
+            new += 1
+        pages = p
+        if new == 0 or (p == 1 and "viewMoreButton" not in r.text):
+            break
+    return {"ok": pages > 0, "products": prods, "pages": pages,
+            "capped": pages >= max_pages, "error": err}
 
 
-def _judge_relevance(types: list[dict], results: dict[str, list[dict]]) -> dict[str, set[str]] | None:
-    """{search: {kept title ids}} or None if the check failed (caller then keeps
-    the keyword count and marks it unverified)."""
-    blocks = []
-    for i, t in enumerate(types):
-        prods = results.get(t["search"]) or []
-        if prods:
-            blocks.append(f'range r{i} — Kapruka search "{t["search"]}" — theirs: {t["kind"]}\n'
-                          + "\n".join(f"  r{i}t{j}: {p.get('title')}" for j, p in enumerate(prods)))
-    if not blocks:
-        return {t["search"]: set() for t in types}
+def _norm_brand(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def kapruka_brand_check(brand: str | None) -> dict | None:
+    """Does Kapruka already sell THEIR brand? Searches the name and keeps titles that
+    carry it (spaces/punctuation ignored: "Nuts on Top" matches "NutsOnTop")."""
+    key = _norm_brand(brand)
+    if len(key) < 3:
+        return None
+    with _kapruka_lock:
+        res = _kapruka_pages(brand, 1)
+    if not res["ok"]:
+        return {"brand": brand, "ok": False, "error": res["error"], "count": None, "samples": []}
+    hits = [p for p in res["products"] if key in _norm_brand(p["title"]) or key in _norm_brand(p["url"])]
+    return {"brand": brand, "ok": True, "count": len(hits),
+            "search_url": KAPRUKA_SEARCH + quote_plus(brand), "samples": hits[:4]}
+
+
+_KIND_JUDGE_PROMPT = """A Sri Lankan business sells: {kind}
+(category a shopper would type: "{term}")
+
+Below are products Kapruka.com sells today, from Kapruka's own search. Put each product id in ONE group:
+  K = SAME KIND: a shopper who wants THEIR product would accept this as a real alternative. Same
+      product type and a similar style or positioning. Be fair, not strict: for handcrafted scented
+      soy candles, any scented candle in a jar or tin is K; for artisanal handmade chocolate bars,
+      premium/craft/couverture chocolate bars are K.
+  C = SAME CATEGORY, OTHER KIND: the same product type but clearly a different kind (mass-market
+      KitKat/Snickers bars for an artisan chocolatier; plain household candles for scented soy candles).
+  X = NOT THIS CATEGORY: anything else (chocolate cake for chocolate bars, a candle holder or a
+      birthday cake candle for scented candles, a hamper that only contains the item).
+
+{lines}
+
+Output ONLY JSON: {{"K": ["<id>", ...], "C": ["<id>", ...]}} (ids not listed count as X)."""
+
+
+def _judge_kind(t: dict, prods: list[dict]) -> tuple[set[int], set[int]] | None:
+    """(same-kind indexes, same-category indexes) or None when the judge failed."""
+    if not prods:
+        return set(), set()
+    lines = "\n".join(f"p{j}: {p['title']}" for j, p in enumerate(prods))
     try:
-        raw = run_openai_chat_text(_RELEVANCE_PROMPT.format(blocks="\n\n".join(blocks)),
-                                   model="gpt-4o", timeout=60, caller="kogul.partner_report_relevance")
+        raw = run_openai_chat_text(_KIND_JUDGE_PROMPT.format(kind=t.get("kind") or t["search"], term=t["search"],
+                                                             lines=lines),
+                                   model="gpt-4o", timeout=90, caller="kogul.partner_report_kind")
         data = extract_json(raw)
         if not isinstance(data, dict):
             return None
-        return {t["search"]: {str(x) for x in (data.get(f"r{i}") or [])} for i, t in enumerate(types)}
+
+        def ids(key):
+            return {int(str(x)[1:]) for x in (data.get(key) or [])
+                    if re.fullmatch(r"p\d+", str(x)) and int(str(x)[1:]) < len(prods)}
+        k = ids("K")
+        return k, ids("C") - k
     except Exception:
         return None
 
 
-def kapruka_check(product_types: list[dict]) -> list[dict]:
-    """Per product range: does Kapruka have the CATEGORY (keyword hits) and does
-    it have THEIR KIND of product (judged). 2026-10-14, user on Mineral Earth:
-    "we have soap but we do not have this kinda soap - so its an opportunity".
-    verdict none (0 of their kind) / thin (1-9) / covered (10+) / failed.
-    The search shows one page (~20), so a full page is reported as "20+"."""
-    import kapruka_live_verify as klv
+def kapruka_check(product_types: list[dict], brand: str | None = None) -> list[dict]:
+    """Per product range: how many products Kapruka has in the CATEGORY and how many of
+    THEIR KIND, from a deep search (generic term paged ~180 deep + their-kind terms), every
+    result judged. verdict none (0 of their kind) / thin (1-9) / covered (10+) / failed.
+    The first item is the brand check when a brand name is given (brand_check=True)."""
     types = [t for t in product_types if t.get("search")][:MAX_PRODUCT_TYPES]
-    raw: dict[str, dict] = {}
-    with _kapruka_lock:
-        for t in types:
-            try:
-                raw[t["search"]] = klv.smart_live_search(t["search"])
-            except Exception as e:
-                raw[t["search"]] = {"ok": False, "error": str(e)[:150]}
-    ok_products = {k: (r.get("products") or []) for k, r in raw.items() if r.get("ok")}
-    kept = _judge_relevance(types, ok_products) if ok_products else None
-
-    out = []
+    out: list[dict] = []
+    if brand:
+        b = kapruka_brand_check(brand)
+        if b:
+            out.append({**b, "brand_check": True})
     for i, t in enumerate(types):
-        term, res = t["search"], raw[t["search"]]
-        url = KAPRUKA_SEARCH + quote_plus(term)
-        base = {"term": term, "kind": t.get("kind"), "their_products": t.get("products"), "search_url": url}
-        if not res.get("ok"):
-            out.append({**base, "count": None, "verdict": "failed", "error": res.get("error"), "samples": []})
+        term = t["search"]
+        base = {"term": term, "kind": t.get("kind"), "their_products": t.get("products"),
+                "search_url": KAPRUKA_SEARCH + quote_plus(term), "method": KAPRUKA_CHECK_METHOD}
+        deep = i < KAPRUKA_DEEP_TYPES
+        searches = [(term, KAPRUKA_PAGES_GENERIC if deep else 1)]
+        searches += [(k, KAPRUKA_PAGES_KIND if deep else 1) for k in (t.get("kind_terms") or [])[:2]
+                     if k and k.lower() != term.lower()]
+        pool, tried, errors, capped = {}, [], [], False
+        with _kapruka_lock:
+            for q, pages in searches:
+                res = _kapruka_pages(q, pages)
+                tried.append(f"{q} ({res['pages']} page{'s' if res['pages'] != 1 else ''})")
+                if res["error"]:
+                    errors.append(f"{q}: {res['error']}")
+                if q == term:
+                    capped = res["capped"]
+                for pr in res["products"]:
+                    pool.setdefault(pr["url"], pr)
+        prods = list(pool.values())
+        if not prods and errors:
+            out.append({**base, "count": None, "verdict": "failed", "error": "; ".join(errors), "samples": []})
             continue
-        all_prods = res.get("products") or []
-        prods = all_prods
-        if kept is not None:
-            ids = kept.get(term, set())
-            prods = [p for j, p in enumerate(all_prods) if f"r{i}t{j}" in ids]
-        n = len(prods) if kept is not None else (res.get("count") or 0)
-        out.append({**base, "count": n,
-                    "full_page": len(all_prods) >= 19 and n >= 19,
-                    "verdict": "none" if n == 0 else ("thin" if n <= THIN_MAX else "covered"),
-                    "type_checked": kept is not None,
-                    "keyword_hits": len(all_prods),
-                    "category_exists": len(all_prods) > 0,
-                    "terms_tried": res.get("search_terms_tried") or [term],
-                    "samples": [{"title": p.get("title"), "url": p.get("url")} for p in prods[:4]],
-                    "category_samples": [{"title": p.get("title"), "url": p.get("url")} for p in all_prods[:3]]})
+        judged = _judge_kind(t, prods)
+        if judged is None:
+            out.append({**base, "count": None, "verdict": "failed", "error": "couldn't judge the results",
+                        "keyword_hits": len(prods), "samples": []})
+            continue
+        same, other = judged
+        n_kind, n_cat = len(same), len(same) + len(other)
+        out.append({**base, "count": n_kind, "category_count": n_cat,
+                    "full_page": capped and n_cat >= 150,
+                    "verdict": "none" if n_kind == 0 else ("thin" if n_kind <= THIN_MAX else "covered"),
+                    "type_checked": True, "keyword_hits": len(prods),
+                    "category_exists": n_cat > 0, "terms_tried": tried,
+                    "partial": bool(errors), "error": "; ".join(errors) or None,
+                    "samples": [{"title": prods[j]["title"], "url": prods[j]["url"]} for j in sorted(same)[:5]],
+                    "category_samples": [{"title": prods[j]["title"], "url": prods[j]["url"]} for j in sorted(other)[:4]]})
     return out
+
+
+def split_kapruka(kap) -> tuple[list[dict], dict | None]:
+    """(product ranges, brand check) from a stored kapruka_json (old list or new)."""
+    kap = kap if isinstance(kap, list) else []
+    brand = next((k for k in kap if k.get("brand_check")), None)
+    return [k for k in kap if not k.get("brand_check")], brand
 
 
 # ---------------------------------------------------------------- 4. lucrative verdict
@@ -752,6 +852,7 @@ def merge_research_location(profile: dict, research: dict) -> dict:
 
 def lucrative_verdict(profile: dict, catalog: dict, kapruka: list[dict], research: dict | None = None) -> dict:
     """{level: lucrative|potential|low|blocked|unknown, label, reasons[]}"""
+    kapruka, brand_hit = split_kapruka(kapruka)
     reasons = []
     skus, sku_src = effective_skus(profile, catalog, research)
     checked = [k for k in kapruka if k["verdict"] != "failed"]
@@ -766,16 +867,24 @@ def lucrative_verdict(profile: dict, catalog: dict, kapruka: list[dict], researc
         return {"level": "blocked", "label": "Location blocker",
                 "reasons": ["Outside Colombo and not willing to do consignment."]}
 
+    if brand_hit and brand_hit.get("count"):
+        reasons.append(f"Kapruka already sells {brand_hit['brand']} ({brand_hit['count']} product(s) found on "
+                       f"kapruka.com): check whether they're already a partner before reaching out.")
     if gaps:
         def _gap(k):
             if k['verdict'] == 'thin':
-                return f"{k['term']} (only {k['count']} of their kind on Kapruka)"
+                cat = (f"Kapruka has {k['category_count']}{'+' if k.get('full_page') else ''} {k['term']} in all, "
+                       if k.get("category_count") is not None else "")
+                return f"{k['term']} ({cat}only {k['count']} of their kind)"
             return (f"{k['term']} (Kapruka has the category, but not their kind)" if k.get('category_exists')
                     else f"{k['term']} (not on Kapruka at all)")
         names = ", ".join(_gap(k) for k in gaps)
         reasons.append(f"Fills a Kapruka gap: {names}.")
     elif checked:
-        reasons.append("Kapruka already stocks this range well (10+ results for every product type).")
+        reasons.append("Kapruka already stocks their kind well: " + ", ".join(
+            f"{k['term']} ({k['count']} of their kind"
+            + (f", {k['category_count']} in all" if k.get('category_count') else "") + ")"
+            for k in checked) + ".")
     else:
         reasons.append("Kapruka coverage not checked yet.")
 
@@ -799,6 +908,8 @@ def lucrative_verdict(profile: dict, catalog: dict, kapruka: list[dict], researc
     elif skus is not None:
         reasons.append(f"{skus} products (from {sku_src}).")
 
+    if brand_hit and brand_hit.get("count"):
+        return {"level": "low", "label": "Already sold on Kapruka", "reasons": reasons}
     location_ok = colombo == "yes" or (colombo == "no" and consign == "yes")
     strong_brand = bool(bv and bv.get("level") == "high")  # user: a solid brand is worth it on its own
     if (gaps or strong_brand) and location_ok and (skus is None or lower_bound or skus > MIN_SKUS):

@@ -238,6 +238,7 @@
         <label class="field" style="margin:0">Category:</label>
         <select id="simDepartment">
           <option value="grocery_fresh">Grocery &amp; Fresh Food</option>
+          <option value="chocolates">Chocolates</option>
           <option value="clothing_fashion">Clothing &amp; Fashion</option>
           <option value="beauty_fragrance">Beauty &amp; Fragrance</option>
           <option value="home_lifestyle">Home &amp; Lifestyle</option>
@@ -3066,11 +3067,15 @@ const RPT_SRC = {website: 'their website', chat: 'said in chat', google: 'Google
 const RPT_BV = {high: ['High brand value', 'good'], medium: ['Medium brand value', 'mid'], low: ['Low brand value', 'low'], unknown: ['Brand value unknown', 'low']};
 const RPT_PLATFORM = {instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok', youtube: 'YouTube'};
 
+function _kapCat(k) {  // "102 candles" — the whole category on Kapruka (deep search, judged)
+  return k.category_count != null ? `${fmtNum(k.category_count)}${k.full_page ? '+' : ''} ${k.term}` : null;
+}
 function _kapLine(k) {
   if (k.verdict === 'failed') return 'search failed';
-  if (k.verdict === 'none') return k.category_exists ? 'Kapruka has the category, not their kind' : 'not on Kapruka at all';
-  if (k.verdict === 'thin') return `only ${fmtNum(k.count)} of their kind on Kapruka`;
-  return `Kapruka has ${fmtNum(k.count)}${k.full_page ? '+' : ''} of their kind`;
+  const cat = _kapCat(k);
+  if (k.verdict === 'none') return k.category_exists ? (cat ? `Kapruka has ${cat}, none of their kind` : 'Kapruka has the category, not their kind') : 'not on Kapruka at all';
+  if (k.verdict === 'thin') return cat ? `Kapruka has ${cat}, only ${fmtNum(k.count)} of their kind` : `only ${fmtNum(k.count)} of their kind on Kapruka`;
+  return `Kapruka has ${fmtNum(k.count)} of their kind` + (cat ? ` (${cat} in all)` : '');
 }
 
 function renderPartnerReport(d) {
@@ -3214,19 +3219,23 @@ function renderPartnerReport(d) {
     <div class="rpt-card">
       <div class="rpt-card-head"><h3>Kapruka search details</h3>
         <button type="button" class="link-btn" data-rpt="rekapruka">Search Kapruka again</button></div>
-      <p class="muted rpt-small">Live search on kapruka.com for each of their product ranges (from their own shop collections). The count is only Kapruka products of <em>their kind</em>, so "Kapruka has soap" doesn't hide that it has no handmade natural soap.</p>
+      <p class="muted rpt-small">Live search on kapruka.com for each of their product ranges, read deep (every results page) and also searched with words for <em>their kind</em>. Each Kapruka product is judged: their kind, same category but another kind, or unrelated. The big number is their kind; the category total is shown beside it.</p>
+      ${d.kapruka_brand && d.kapruka_brand.count ? `<div class="rpt-warn"><strong>Kapruka already sells ${escapeHtml(d.kapruka_brand.brand)}</strong> (${fmtNum(d.kapruka_brand.count)} found): ${(d.kapruka_brand.samples || []).map(s => `<a target="_blank" rel="noopener" href="${safeUrl(s.url)}">${escapeHtml(s.title)}</a>`).join(' · ')}. Check whether they're already a partner.</div>`
+        : (d.kapruka_brand && d.kapruka_brand.ok ? `<p class="muted rpt-small">Their brand name "${escapeHtml(d.kapruka_brand.brand)}" is not on Kapruka.</p>` : '')}
       ${kap.length ? `<div class="rpt-kap">${kap.map(k => {
         const [lbl, cls] = RPT_KAP[k.verdict] || ['?', 'failed'];
         const pct = k.count == null ? 0 : Math.min(100, Math.round(k.count * 10));
         return `<div class="rpt-kap-row">
           <div class="term">${escapeHtml(k.term)}${k.their_products ? `<small>${fmtNum(k.their_products)} of theirs</small>` : ''}</div>
           <div class="bar"><span style="width:${pct}%" class="${cls}"></span></div>
-          <div class="cnt">${k.count == null ? '—' : fmtNum(k.count) + (k.full_page ? '+' : '')}</div>
+          <div class="cnt">${k.count == null ? '—' : fmtNum(k.count)}${k.category_count != null ? `<small>of ${fmtNum(k.category_count)}${k.full_page ? '+' : ''}</small>` : ''}</div>
           <span class="kap-pill ${cls}">${lbl}</span>
           <a class="link" target="_blank" rel="noopener" href="${safeUrl(k.search_url)}">Kapruka ↗</a>
           ${k.kind ? `<div class="samples"><strong>Theirs:</strong> ${escapeHtml(k.kind)}</div>` : ''}
           ${(k.samples || []).length ? `<div class="samples"><strong>Same kind on Kapruka:</strong> ${k.samples.map(s => `<a target="_blank" rel="noopener" href="${safeUrl(s.url)}">${escapeHtml(s.title)}</a>`).join(' · ')}</div>`
-            : (k.category_exists ? `<div class="samples"><strong>Kapruka's ${escapeHtml(k.term)} today (${fmtNum(k.keyword_hits)}${k.keyword_hits >= 19 ? '+' : ''}), none of their kind:</strong> ${(k.category_samples || []).map(s => `<a target="_blank" rel="noopener" href="${safeUrl(s.url)}">${escapeHtml(s.title)}</a>`).join(' · ')}</div>` : '')}
+            : ''}
+          ${(k.category_samples || []).length ? `<div class="samples"><strong>Same category, other kind:</strong> ${k.category_samples.map(s => `<a target="_blank" rel="noopener" href="${safeUrl(s.url)}">${escapeHtml(s.title)}</a>`).join(' · ')}</div>` : ''}
+          ${(k.terms_tried || []).length ? `<div class="samples muted"><strong>Searched:</strong> ${k.terms_tried.map(escapeHtml).join(', ')}${k.partial ? ' (stopped early: ' + escapeHtml(k.error || '') + ')' : ''}</div>` : ''}
         </div>`; }).join('')}</div>`
         : '<p class="muted">Not searched yet.</p>'}
     </div>

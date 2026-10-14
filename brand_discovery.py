@@ -303,7 +303,10 @@ def _pipeline_phone_tails() -> set[str]:
 _DEPT_SEARCH_HINTS = {
     "clothing_fashion": "clothing, fashion labels, apparel, kidswear, sarees, modest wear (hijabs, abayas), streetwear, socks",
     "beauty_fragrance": "skincare, natural cosmetics, soap, perfume, haircare, bath products",
-    "grocery_fresh": "artisanal food, bakery, chocolate, tea, spices, condiments, preserves, snacks",
+    "grocery_fresh": "artisanal food, bakery, tea, spices, condiments, preserves, snacks",
+    # 2026-10-14 (user: Nuts on Top "is a chocolate department"): Kapruka has its own
+    # Chocolates department, so chocolate makers are searched and filed there.
+    "chocolates": "artisanal chocolate, chocolate bars, truffles, pralines, chocolate gift boxes",
     "home_lifestyle": "home decor, ceramics, candles, handloom textiles, furniture, kitchenware",
     "jewellery": "jewellery, handmade silver, gemstones, accessories",
     "toys_kids": "toys, children's games, educational toys, baby products",
@@ -349,6 +352,7 @@ _URL_SECTION_DEPTS = {
     "sports": {"sports_fitness", "toys_kids"},
     "bicycles": {"sports_fitness", "toys_kids"},
     "grocery": {"grocery_fresh", "home_lifestyle"},
+    "chocolates": {"chocolates"},
     "baby": {"toys_kids", "home_lifestyle"},
     "childrens": {"toys_kids", "books_stationery_cards"},
 }
@@ -414,6 +418,7 @@ _DEPT_NAME_MAP = {
     "clothing": "clothing_fashion",
     "beauty": "beauty_fragrance",
     "grocery": "grocery_fresh",
+    "chocolate": "chocolates",
     "home lifestyle": "home_lifestyle",
     "jewellery": "jewellery",
     "toys": "toys_kids",
@@ -590,7 +595,7 @@ def _fetch_ga4_purchased_items(days: int = 90) -> list[dict]:
 _GA4_ITEM_NAME_MAP = {
     "bouquet": "home_lifestyle", "flower": "home_lifestyle", "orchid": "home_lifestyle",
     "chrysanthemum": "home_lifestyle", "vase": "home_lifestyle",
-    "cake": "grocery_fresh", "chocolate": "grocery_fresh", "cookie": "grocery_fresh",
+    "cake": "grocery_fresh", "chocolate": "chocolates", "truffle": "chocolates", "cookie": "grocery_fresh",
     "biscuit": "grocery_fresh", "bakery": "grocery_fresh", "milk powder": "grocery_fresh",
     "hamper": "gift_sets_combos", "gift set": "gift_sets_combos", "gift box": "gift_sets_combos",
     "gift voucher": "gift_sets_combos",
@@ -1972,9 +1977,10 @@ For each candidate below, decide:
     fragment like "Home" or "Welcome" if the title uses a "Page - Brand Name" style format — pick
     whichever part of the title is the actual distinctive brand name).
   - department: best-guess closest Kapruka department for this brand's products — one of
-    electronics, clothing_fashion, grocery_fresh, home_lifestyle, sports_fitness, toys_kids,
+    electronics, clothing_fashion, grocery_fresh, chocolates, home_lifestyle, sports_fitness, toys_kids,
     beauty_fragrance, automobile, jewellery, books_stationery_cards, gift_sets_combos, pet,
-    services, other.
+    services, other. A business whose main line is chocolate (bars, truffles, pralines) is chocolates,
+    not grocery_fresh.
   - products_to_bring_in: one short sentence naming the specific real products/lines this brand
     could bring onto Kapruka (be concrete — use what's actually on the page, not generic filler).
   - search_keywords: 2-3 SHORT, real, generic phrases (1-4 words each, no brand names) a Sri

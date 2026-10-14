@@ -15,6 +15,7 @@ DEPARTMENT_LABELS = {
     "sports_fitness": "Sports & Fitness", "electronics": "Electronics",
     "books_stationery_cards": "Books, Stationery & Cards", "gift_sets_combos": "Gift Sets & Combos",
     "pet": "Pet Supplies", "automobile": "Automobile", "other": "General",
+    "chocolates": "Chocolates",  # 2026-10-14: Kapruka's own /online/chocolates department
 }
 
 # Older conversations are summarized by count only; the last N turns go in verbatim.

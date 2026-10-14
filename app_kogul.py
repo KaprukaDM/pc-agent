@@ -1764,7 +1764,8 @@ def _report_summary(c, category_id: int) -> dict:
     return {"built": True, "queued": queued, "level": v["level"], "label": v["label"], "skus": skus,
             "sku_lower_bound": bool(src and "at least" in src), "location": profile.get("location"),
             "in_colombo": profile.get("in_colombo"),
-            "gaps": sum(1 for k in kapruka if k.get("verdict") in ("none", "thin")), "ranges": len(kapruka),
+            "gaps": sum(1 for k in partner_report.split_kapruka(kapruka)[0] if k.get("verdict") in ("none", "thin")),
+            "ranges": len(partner_report.split_kapruka(kapruka)[0]),
             "brand_value": (research.get("brand_value") or {}).get("level")}
 
 
@@ -1808,7 +1809,8 @@ def _report_payload(category_id: int) -> dict | None:
         "error": rep.get("error"),
         "catalog": {k: catalog.get(k) for k in ("count", "source", "note")},
         "profile": profile,
-        "kapruka": kapruka,
+        "kapruka": partner_report.split_kapruka(kapruka)[0],
+        "kapruka_brand": partner_report.split_kapruka(kapruka)[1],
         "skus": skus, "sku_source": sku_src, "min_skus": partner_report.MIN_SKUS,
         "verdict": partner_report.lucrative_verdict(profile, catalog, kapruka, research) if profile else None,
         "standard_questions": brain.standard_brief_questions(),
@@ -1826,7 +1828,7 @@ def _upgrade_existing_reports() -> None:
     try:
         with db.conn() as c:
             rows = c.execute(
-                "SELECT r.category_id, r.research_json, r.catalog_json, wc.social_links FROM card_reports r "
+                "SELECT r.category_id, r.research_json, r.catalog_json, r.kapruka_json, wc.social_links FROM card_reports r "
                 "JOIN weekly_categories wc ON wc.id = r.category_id WHERE wc.source = 'brand_discovery' "
                 "AND wc.review_status = 'pending_review' AND r.research_json IS NOT NULL").fetchall()
         rebuild = []
@@ -1840,6 +1842,10 @@ def _upgrade_existing_reports() -> None:
                     c.execute("UPDATE card_reports SET research_json = ? WHERE category_id = ?",
                               (json.dumps(research, ensure_ascii=False), r["category_id"]))
                 time.sleep(1)  # gentle on the social sites
+            ranges = partner_report.split_kapruka(_loads(r["kapruka_json"], []))[0]
+            if ranges and not any(k.get("method") == partner_report.KAPRUKA_CHECK_METHOD for k in ranges):
+                rebuild.append(r["category_id"])  # 2026-10-14: deep Kapruka check replaced the page-1 one
+                continue
             cat = _loads(r["catalog_json"], {})
             if not cat.get("hosts_checked") and (cat.get("count") is None or "sitemap" in str(cat.get("source") or "")):
                 rebuild.append(r["category_id"])
@@ -1891,8 +1897,10 @@ def _run_report_build(job_id: str, category_id: int, force_kapruka: bool, force_
 
         kapruka = _loads(rep.get("kapruka_json"), [])
         terms = profile.get("product_types") or []
-        if terms and (force_kapruka or json.dumps(terms) != rep.get("kapruka_terms")):
-            kapruka = partner_report.kapruka_check(terms)
+        old_method = not any(k.get("method") == partner_report.KAPRUKA_CHECK_METHOD
+                             for k in partner_report.split_kapruka(kapruka)[0])
+        if terms and (force_kapruka or old_method or json.dumps(terms) != rep.get("kapruka_terms")):
+            kapruka = partner_report.kapruka_check(terms, brand=card.get("name") or card.get("concept"))
 
         if not has_qs:
             try:
