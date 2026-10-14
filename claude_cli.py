@@ -17,6 +17,24 @@ from pathlib import Path
 _claude_cli_path: str | None = None
 
 
+def _sandbox_cwd() -> str:
+    import tempfile
+    d = Path(tempfile.gettempdir()) / "kogul_cli_sandbox"
+    d.mkdir(exist_ok=True)
+    return str(d)
+
+
+def _no_mcp_args() -> list[str]:
+    """--tools only covers built-in tools; the CLI would still load the
+    account's MCP connectors. An empty --mcp-config plus --strict-mcp-config
+    loads none. Passed as a file because claude.cmd runs through cmd.exe,
+    which can mangle inline JSON quoting."""
+    cfg = Path(_sandbox_cwd()) / "no_mcp.json"
+    if not cfg.exists():
+        cfg.write_text('{"mcpServers": {}}', encoding="utf-8")
+    return ["--strict-mcp-config", "--mcp-config", str(cfg)]
+
+
 def find_claude_cli() -> str:
     global _claude_cli_path
     if _claude_cli_path is not None:
@@ -62,12 +80,16 @@ def run_claude_cli(prompt: str, model: str = "claude-sonnet-5", timeout: int = 1
     into the project."""
     exe = find_claude_cli()
     try:
+        # --tools "" removes every built-in tool (--allowedTools "" only skips
+        # auto-approval and can still leave read-only tools usable), and the
+        # empty cwd means there is no project file within reach either way.
         proc = subprocess.run(
-            [exe, "-p", "--model", model, "--allowedTools", ""],
+            [exe, "-p", "--model", model, "--tools", "", *_no_mcp_args()],
             input=prompt,
             capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
             shell=False,
             env=claude_cli_env(),
+            cwd=_sandbox_cwd(),
         )
     except FileNotFoundError as e:
         raise RuntimeError(f"Found claude CLI at {exe} but could not execute it: {e}")
@@ -184,11 +206,12 @@ def run_claude_cli_with_search(prompt: str, model: str = "claude-sonnet-5", time
     exe = find_claude_cli()
     try:
         proc = subprocess.run(
-            [exe, "-p", "--model", model, "--allowedTools", "WebSearch"],
+            [exe, "-p", "--model", model, "--tools", "WebSearch", "--allowedTools", "WebSearch", *_no_mcp_args()],
             input=prompt,
             capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
             shell=False,
             env=claude_cli_env(),
+            cwd=_sandbox_cwd(),
         )
     except FileNotFoundError as e:
         raise RuntimeError(f"Found claude CLI at {exe} but could not execute it: {e}")

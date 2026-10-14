@@ -1497,3 +1497,249 @@ JSON-parsing call site in kogul/, not just the new code.
 - [ ] VPS deployment — built/tested locally only; `OPPORTUNITY_TOOL_URL` hardcoded to `127.0.0.1:5002`
 - [ ] `already_partner_flag`'s "uncertain" threshold (0.4 word-overlap) is fairly loose — live-tested showed one weak false-lead (Caravan Fresh -> nature-fresh); acceptable under the fail-open philosophy (flag costs a glance, silent drop costs a real opportunity) but worth revisiting if false-flags prove noisy in real use
 - [ ] Brand discovery has not yet been clicked through in an actual browser (Approve -> reach out button, card layout) — verified via direct DB/route/pipeline calls only so far
+
+## 2026-10-13 — full-app audit fix batch (user: "can u fix everyhing")
+
+Security
+- [x] A1 Auth gate: non-loopback requests need HTTP basic auth (KOGUL_ADMIN_PASSWORD in .env); webhook exempt; no password = remote blocked
+- [x] A2 CSRF: reject cross-origin POST/DELETE (Origin/Referer mismatch)
+- [x] A3 Webhook fails closed when META_APP_SECRET empty
+- [x] A4 Restart PIN from env, not hardcoded "1111"
+- [x] A5 Claude CLI hardened (no tools, empty cwd)
+- [x] A6 MAX_CONTENT_LENGTH
+WhatsApp send path
+- [x] W1 needs_handover + terminal status gate inside _do_partner_auto_reply (webhook path)
+- [x] W2 One _send_and_log(): live mode really sends (template for cold opener/nudge), records simulated=0 + wa id or failure
+- [x] W3 Human "Send" really sends in live mode; needs_handover only cleared on success
+- [x] W4 Webhook dedupe on Meta message id; return 200 fast, process in worker; per-partner lock
+- [x] W5 Scheduler timers measured from first unanswered outbound (not reset by nudge); keep old number after switch
+- [x] W6 Reply-generation failure / unknown number -> PC team alert
+- [x] W7 Non-text inbound (reactions/status) don't trigger a bot reply
+Agent logic
+- [x] L1 {category} in opening = products/department, not business name; safe template fill
+- [x] L2 Structured JSON output (reply/handover/agreed/not_agreed), shared parser for real + sim; unparseable -> hold for human
+- [x] L3 AGREED action + hot-lead alert
+- [x] L4 Status revival (unresponsive->replied on reply; not_agreed reopens on positive)
+- [x] L5 Prompt: pricing/payments contradiction, partner text treated as data, recent-turn cap
+- [x] L6 Nudge in partner's language
+- [x] L7 Simulation uses brand-discovery context
+Sourcing
+- [x] S1 Mark seen only after judging, overflow fits kept
+- [x] S2 Domain/name normalization in dedupe + phone check vs partners
+- [x] S3 Dept prioritization: recent window, no permanent starvation
+- [x] S4 Reject reason required; Cancel aborts; ORDER BY fixed
+Settings/Dashboard
+- [x] D1 Show real alert recipients + warn when none
+- [x] D2 Confirm dialogs on Approve/Remove/Mark*
+- [x] D3 Partner chats auto-refresh
+- [x] D4 jget checks r.ok; per-tab try/catch; null guards
+- [x] D5 safeUrl() for hrefs
+- [x] D6 Sim export re-fetches; labels fixed; dead CSS/comments removed
+- [x] D7 Live/simulation mode banner
+
+Verification (2026-10-14)
+- [x] Offline harness: 56/56 behaviour checks pass twice in a row, against a COPY of
+      kogul.sqlite with OpenAI/email/WhatsApp replaced by fakes (no real service touched):
+      access guard, CSRF, webhook signature/dedupe/burst/receipts/reactions/unknown
+      number, handover + agreed gates, human send success/failure, cold-window
+      template rule, unreadable-output hold, AI-down hold, status revival,
+      20h/24h/72h timers (nudge no longer resets the clock), simulation parity.
+- [x] Every tab loaded headless: 0 JS errors, no tab-error boxes, no horizontal
+      scroll at 390px width.
+- [x] Real gpt-4o, 2 turns in a throwaway simulation (deleted after): JSON contract
+      followed, opener says "Home & Lifestyle sellers" (was the business name),
+      Singlish question answered in Singlish, first step only.
+- [x] Claude CLI: proved the OLD flags could read a file in its cwd (real hole);
+      with --tools "" + empty strict MCP config it cannot, and still answers;
+      the search variant still searches.
+- [x] Found + fixed during verification: `[hidden]` was overridden by .tab-badge,
+      so Partner Chats showed an empty red badge at count 0.
+
+Still needs the user (cannot be done from here)
+- [ ] Set META_APP_SECRET (Meta App Dashboard → Settings → Basic). Until then the
+      webhook refuses every inbound message (fails closed, by design).
+- [ ] Set KOGUL_ADMIN_PASSWORD in the VPS .env, or the VPS copy is unreachable
+      from outside that machine (also by design). Optionally KOGUL_RESTART_PIN.
+- [ ] Register an approved WhatsApp utility template for cold outreach and put
+      its name in PC Agent settings → WhatsApp sending; then turn Live sending on.
+- [ ] Deploy to the VPS (nothing from this batch is deployed yet).
+- [ ] Not changed on purpose: Flask dev server kept (waitress isn't installed);
+      jobs still live in memory (now pruned after 1h) — a restart still loses a
+      job that is mid-run.
+
+## 2026-10-14 — Expand Catalog (thin categories) as a brand-search hint
+User: "yes add that" — after confirming brand search only used New Categories
+(status='category_gap') and never Expand Catalog.
+- [x] Per-department thin-catalog hint (Kapruka page exists, <10 products, Daraz
+      demand) added to the gap-driven search prompt as a non-blocking bonus,
+      same pattern as the missing-items / GA4 blocks
+      (brand_discovery._thin_catalog_hints_for_department + expand_block)
+- [x] Same rows shown as demand evidence on business cards (source 'daraz_thin',
+      new "Thin Kapruka page, Daraz demand" group in renderDemandEvidence, links
+      to our thin page)
+- [x] Found while building: the Daraz->Kapruka page join behind Expand Catalog
+      crosses departments wrongly (automobile Mirrors/Sun Protection -> cosmetics,
+      toys Monitors -> computer monitors, Cheese -> cheesecakes). Filtered here by
+      URL-section -> department map; the join itself (Opportunity Tool's Expand
+      Catalog tab shows the same wrong pairs) is NOT fixed.
+- [x] Verified against real data_store.sqlite: 108 raw rows -> 39 kept across 11
+      depts (automobile 0, gift_sets 0); real electronics prompt rendered with
+      Claude stubbed shows the block; attach_demand_evidence returns 2 daraz_thin
+      rows; page JS passes node --check; server restarted (was idle), serves new page.
+- [ ] Existing cards keep their old evidence (backfill only fills EMPTY evidence);
+      new rows only appear on businesses found from the next generate onward.
+- [ ] Not yet seen rendered in a browser with a real card.
+
+## 2026-10-14 — PC team testing: flag a reply in Simulate -> rule -> auto-applied
+User: "give this to partner central team to test ... simulate as a partner - they
+should be able to test it and add rules or define rules if any problem is detected
+that will be automatically included the chatfile or anyfile"
+- [x] agent_rules table (rule, problem, flagged reply, sim id, added_by, active)
+- [x] Active rules injected into EVERY prompt: real partner replies, Simulate,
+      nudges, Chat with PC Agent — brain.read_brief() = KOGUL.md + team_rules_block(),
+      read fresh each message. KOGUL.md file itself never modified.
+- [x] Simulate: "Flag this reply" under each PC Agent reply -> what went wrong +
+      rule ("Draft a rule for me" = gpt-4o suggestion, editable) -> save. Opening
+      message shows "edit it in Settings -> Opening message" instead (fixed template).
+- [x] "Save rule & retry this reply" -> /api/simulations/<id>/retry deletes that
+      reply + everything after, clears handover/outcome, regenerates with rules
+- [x] Rules list on the Simulate tab: on/off, edit, delete, who/when/from which
+      test/problem/flagged reply. Tester name kept in localStorage.
+- [x] Verified: 12/12 HTTP-level checks with real gpt-4o on a throwaway scenario
+      (before: no sign-off; rule saved; after retry: reply ends with it; rule in
+      partner/nudge/chat prompts; paused rule leaves prompts; bad retry refused;
+      cleaned up). Headless browser desktop + 390px: flag form, opening note,
+      rules list render, 0 JS errors, no horizontal overflow. Fixed: AI draft
+      note came back as the word "empty".
+- [ ] Not on the VPS yet — PC team can't reach it until deployed (+ KOGUL_ADMIN_PASSWORD).
+
+## 2026-10-14 — 20h nudge only when the WhatsApp window is about to close
+User: "20 hours: a polite nudge - only if the conversation window is about to end"
+- [x] Nudge fires only if the partner has messaged us and their last message is
+      20h-23.5h old (window still open, closes at 24h). No nudge on cold outreach
+      the partner never answered; none once the window has already closed.
+- [x] 24h second-number switch + 72h unresponsive unchanged
+- [x] UI/brief text describing the nudge updated (Settings follow-up note + KOGUL.md step 5)
+- [x] Verified: 6/6 scheduler cases on a DB copy, sends/AI stubbed (cold 21h no nudge; partner
+      wrote 21h ago nudged; wrote 25h ago no nudge; wrote 10h ago no nudge; 2nd-number switch
+      and 72h unresponsive unchanged). Real DB untouched; server restarted.
+
+## 2026-10-14 — nudge only when the chat stalled midway with no direction/decision
+User: "only nudge if the conversation is halted in midway, not for every" + "when theres
+no clear direction or decision" (chose: "Only when we're waiting on them").
+- [x] At the 20h point one gpt-4o call judges the transcript: nudge only if it stalled
+      midway with no decision and no stated next step/timeline; same call writes the
+      nudge (picks up where it stopped, partner's language, team rules applied)
+- [x] No nudge -> system note with the reason, stage 'nudge_skipped' (no re-check every
+      10 min); AI failure -> no nudge (a wrong nudge reaches a real business)
+- [x] 24h switch / 72h unresponsive behaviour unchanged
+- [x] Verified: real gpt-4o, 6 transcripts x 3 runs + 2 scheduler cases on a DB copy (sends stubbed):
+      stalled-on-question / Singlish-stalled / stalled-mid-steps -> nudged; 'get back next week' /
+      clear no / 'I'll register myself' -> skipped with reason note. Fixed during testing: nudge
+      repeated our last message verbatim; then copied the prompt's example; Singlish chat got an
+      English nudge -> example removed, strict partner-language rule. Final 2 runs 8/8 each.
+      User also asked "depending on the context change the nudge message" -> covered (no fixed text).
+
+## 2026-10-14 — "Log a partner reply" only in simulation mode
+User: "during simulation have that option log a partner reply, and during live chat with
+actual partner i dont want"
+- [x] Partner Chats: dropdown hidden when Live sending is on; shown (as now) when off
+- [x] Server: /api/partners/<id>/reply_from_partner refuses (403) in live mode; the real
+      WhatsApp webhook path is unaffected
+- [x] Verified 7/7: browser sim shows / live hides the dropdown, no JS errors; server 403 + nothing recorded in live, still works in sim (DB copy). Human takeover toggle untouched, present in live mode (user: important).
+
+## 2026-10-14 — Conversation brief flow + Partner report
+User: opening -> if interested, request a brief (products, how many products, location)
+-> Kapruka search of their product types -> auto-reject if only <=5 SKUs (actual SKUs, not
+categories). Plus a Partner report per partner: live pipeline status, about, SKU count,
+does Kapruka sell it (live search, words from their website), location (Colombo? if not,
+consignment?), lucrative-partner verdict, per-partner questions (AI-suggested, Approve /
+Reject — user chose "Per-partner questions"), add own questions, AI analysis of the chat,
+click to open the chat. Visually appealing.
+- [x] Brief questions: default list (Settings-editable) + approved per-partner questions,
+      injected into the reply prompt; asked one per message after interest is shown
+- [x] Auto-reject: <=5 individual products -> not_agreed with reason, polite close
+- [x] KOGUL.md conversation-flow section updated to match
+- [x] Store SKU count from the site itself where possible (Shopify products.json,
+      WooCommerce Store API) — real count, never guessed
+- [x] Live Kapruka search per product type (smart_live_search, one at a time, paced)
+- [x] Profile extraction (gpt-4o): about, product types, stated SKUs, location, Colombo,
+      consignment, answers to every question, chat analysis
+- [x] Lucrative verdict (deterministic from gap + location + SKUs, reasons shown)
+- [x] Per-partner questions: AI suggests up to 3, Approve/Reject, add own, delete
+- [ ] Report UI: button on approved business cards + Partner Chats; modal; status stepper;
+      auto-refresh while open; open-chat button; phone width OK
+- [ ] Verified end to end
+- [ ] Card evidence (Weekly Outreach): GA4/Daraz rows now product-type matched (relevant_store_evidence)
+      for NEW cards. Rewriting the 69 existing cards was prepared but the user declined running it
+      (backup data/kogul.sqlite.bak-before-evidence-fix-20261014 made, nothing written).
+- [x] FIX: report sections invisible — global `section {display:none}` (tab switcher) hid them; use div
+- [x] Report BEFORE outreach (user): keyed to the business card, not the chat partner; on pending
+      cards too; Approve/Reject from inside the report
+- [x] Location read from their website (footer/contact address), Colombo District check
+- [x] Kapruka coverage spelled out per product type, not "3/4"
+- [ ] Partner brief section: every brief item + where it came from (website / store / chat)
+- [x] Verified: brief order + auto-reject (4 soaps) + "3 categories" not rejected, 2 runs x 3 chats real gpt-4o.
+      Found: "3 categories" WAS auto-rejected first -> prompt fix + code guard (brain.guard_auto_reject).
+- [x] Kapruka check judges THEIR KIND (user: "we have soap but not this kinda soap"), ranges from their own
+      shop collections; Mineral Earth -> Lucrative (soap: 3 of their kind; foot soak/lip balm/hair wax: none).
+- [x] Report queue builds every pending card's report in the background; approve refused (409) until built.
+
+## 2026-10-14 — Brief first, call booking CTA, brand value
+User: "Brief collected ... this should be the first step and then approve and opening message sent";
+"call to action is to arrange a call with the team ... 3 slots ... 11 to 4 ... else tomorrow or next week
+... along with the time and name send email and whatsapp notification"; "check for brand value ...
+followers they have - socials, traffic they get on their website"; Nuts on Top location blank.
+- [x] Pipeline: Found -> Brief collected (research) -> Approved -> Opening sent -> Replied -> Call booked -> Decision
+- [x] Reply prompt gets facts already known from the report; PC Agent doesn't re-ask them
+- [x] Call slots: 3, Sri Lanka time, 11:00-15:00 starts, working days; today if before 4 PM else next
+      working day (Mon after Fri 4 PM / weekend). "agreed" requires a chosen slot (+ contact name)
+- [x] Booking stored on partner/simulation; email + WhatsApp alert carry slot + name
+- [x] Brand value + location via web search (followers, traffic if public, press/stockists, location), sourced
+- [x] Verified: call slots across Wed 09:30/11:20/13:40/14:30/17:00, Fri 15:10/18:00, Sun; CTA chats real
+      gpt-4o 2 runs x 4 = 8/8 after fixes. Found + fixed: model booked "Today 2:00 PM" on a plain "yes I want
+      to join" (code guard: slot must be named in the partner's message); Nugegoda treated as outside Colombo
+      (Colombo District list in prompt); "don't ask" note ignored (answered questions now dropped in code).
+      Alerts carry slot + name (stubbed send on DB copy). Web research: Nuts on Top -> Colombo 04, verified
+      by same phone across site/Facebook/UberEats; Mineral Earth -> 2,183 IG followers + 4 stockists.
+- [x] Instagram/TikTok counts often unreadable (login wall, not indexed; SerpApi has 1 search left this
+      month) -> shown as "couldn't be read, open profile", brand value marked partial, never "low" for it.
+- [x] Report UI desktop + 390px: all sections visible, 0 JS errors, no overflow.
+
+## 2026-10-14 — Test notifications: email timeout + WhatsApp "only hello_world"
+- [x] Email: smtp.gmail.com 465 AND 587 both time out from this laptop's network (socket test) —
+      network/firewall, not code. Test row now says so.
+- [x] WhatsApp: a business-sent template does NOT open the 24h window, so the follow-up text was
+      accepted by Meta and silently dropped. New setting "Team alert template" (utility template with
+      one {{1}} variable) carries the alert; without it the test shows "accepted, may not arrive".
+- [ ] User: register the alert template in Meta + enter its name; email works from VPS/other network.
+
+## 2026-10-14 — Brief pre-collected by research + clear AI/human reply mode
+User: "brief should be precollected" (chose: research fills it, no chat); "this should be clear if its
+ai replying or human has taken over".
+- [x] Brief = 4 research items: what they sell, product count, location, Colombo-or-not. Consignment
+      willingness (outside Colombo only) is the one chat question, shown as such, not a research gap.
+- [x] Step reads "Brief collected (all 4 from research)" or "Brief incomplete (missing: ...)"
+- [x] Research: product count (Daraz store / catalogue / stated range), more location sources
+      (Google Maps, Facebook About, directories); contact-page footer text; cart boilerplate skipped
+- [x] FIX: a failed/timed-out web search no longer wipes the previous good research (Cecrafto lost Galle)
+- [x] Max 2 concurrent web-search CLI calls, 360s each (6 in parallel all timed out at 240s)
+- [x] Partner Chats: big reply-mode banner (AI replying / Human takeover / Waiting for a human / stopped)
+      with an explicit button, replacing the small toggle. Verified in browser, 0 JS errors.
+- [ ] Re-verify the 3 gap cards after the timeout fix (House of Leather, Ceylon Elements, Cecrafto)
+- [x] Product count, user: "houseofleather.lk/product has a lot", "run a rabbit also has a lot":
+      (1) research "3" was a count of CATEGORIES -> prompt + code guard drop category counts;
+      (2) RunRabbit IS Shopify but discovery stored platform=None, so products.json was never read ->
+      store_catalog now tries Shopify, WooCommerce, then sitemap product URLs regardless of stored
+      platform: RunRabbit 217 products / 36 collections (was ">=11");
+      (3) custom sites: distinct product-detail links on their shop pages = real lower bound
+      (House of Leather >=13, was missing). Cached empty counts are re-checked on every build.
+- [x] Re-verified gap cards: Cecrafto complete (Galle, outside Colombo); Ceylon Elements + House of Leather
+      location not found anywhere online -> report says "Brief incomplete (missing: location)".
+
+## 2026-10-14 — Nuts on Top: followers + product count (user: "why no facebook, instagram followers detected, tiktok" / "theres SKU more than six")
+- [x] Store catalog also checks the brand's other hosts the homepage loads from (shop.nutsontop.com WooCommerce = 13 products, was "≥6"); exact store lists on every host before any sitemap estimate. Verified live: Nuts on Top 13 from Store API at shop.nutsontop.com; Basketeer 327 / Edutoys 389 unchanged.
+- [x] Follower counts read directly from each profile's public link preview (FB/IG/TikTok og:description) on every report build; replaces web-search estimates. Verified: Nuts on Top FB 3,958 / IG 4,448 / TikTok 2,621 (search had FB 3,000, IG+TikTok unread).
+- [x] Brand value scored on combined followers, Sri Lanka scale (10k+ = high; 3k+ with press/stockists = high). Nuts on Top -> high, verdict Lucrative.
+- [x] Startup pass upgrades existing reports: followers refreshed on all 67 pending (unreadable profiles left: 4 IG, 3 TikTok, 1 FB); cards without an exact product list queued for rebuild once (hosts_checked marker).
+- [ ] Watch: 44/67 now "high" — threshold may need raising if it stops separating brands.

@@ -17,9 +17,10 @@
   <h1>PC Agent</h1>
   <span class="pill">Partner Onboarding</span>
   <span class="tagline">Partner-onboarding researcher &amp; outreach agent</span>
+  <span class="mode-banner sim" id="modeBanner" role="status">Simulation mode — nothing is sent to partners</span>
 </header>
 
-<nav class="tabs" id="mainTabs">
+<nav class="tabs" id="mainTabs" role="tablist" aria-label="Sections">
   <button data-tab="dashboard" class="active"><svg class="tab-icon" viewBox="0 0 24 24"><path d="M4 13h6V4H4v9zm0 7h6v-5H4v5zm10 0h6V11h-6v9zm0-16v5h6V4h-6z"/></svg>Dashboard</button>
   <button data-tab="pipeline"><svg class="tab-icon" viewBox="0 0 24 24"><path d="M3 3h18v2H3V3zm2 4h14v2H5V7zm2 4h10v2H7v-2zm2 4h6v2H9v-2zm2 4h2v2h-2v-2z"/></svg>Pipeline</button>
   <button data-tab="categories"><svg class="tab-icon" viewBox="0 0 24 24"><path d="M12 2l1.8 5.6H20l-4.6 3.4 1.8 5.6-5.2-3.6-5.2 3.6 1.8-5.6L4 7.6h6.2z"/></svg>Weekly Outreach</button>
@@ -62,7 +63,7 @@
         <svg class="stat-icon" viewBox="0 0 24 24"><path d="M19 6.4L17.6 5 12 10.6 6.4 5 5 6.4l5.6 5.6L5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6z"/></svg>
         <div class="n" id="dashStatNotAgreed">–</div><div class="l">Disagreed</div>
       </div>
-      <div class="stat" id="dashTotalCard">
+      <div class="stat" id="dashTotalCard" data-stage="">
         <svg class="stat-icon" viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
         <div class="n" id="dashStatTotal">–</div><div class="l">Total partners (all time)</div>
       </div>
@@ -94,7 +95,6 @@
         </label>
         <button class="btn secondary" id="btnDashApplyRange">Apply</button>
         <button class="btn secondary" id="btnDashAllTime">All time</button>
-        <span class="muted" id="dashRangeStatus"></span>
       </div>
       <p class="muted" style="margin-top:8px">Counts partners by when they were first contacted. Click any stage below to see who's in it.</p>
     </div>
@@ -260,6 +260,21 @@
         <div class="empty-state"><div class="empty-icon"><svg viewBox="0 0 24 24"><path d="M9 12a4 4 0 100-8 4 4 0 000 8zm0 2c-2.67 0-8 1.34-8 4v2h9.29A6.97 6.97 0 019 16c0-.73.1-1.39.29-2H9zm9.5-3.5c1.38 0 2.5-1.12 2.5-2.5S19.88 5.5 18.5 5.5 16 6.62 16 8s1.12 2.5 2.5 2.5zM18.5 12c-1.84 0-5.5.92-5.5 2.75V16h11v-1.25c0-1.83-3.66-2.75-5.5-2.75z"/></svg></div><div class="empty-text">Start a scenario above, or pick one from the list to continue it.</div></div>
       </div>
     </div>
+    <!-- 2026-10-14: PC team testing — rules added here apply to every chat -->
+    <div class="card" id="teamRulesCard">
+      <div class="toolbar" style="justify-content:space-between">
+        <div>
+          <h3 style="margin:0">Team rules</h3>
+          <span class="muted" style="font-size:12.5px">PC Agent follows every active rule in every chat (real partners, tests, follow-ups, Chat with PC Agent) from the next message on. Spot a bad reply above? Click <strong>Flag this reply</strong> under it.</span>
+        </div>
+        <label class="muted" style="font-size:12.5px">Your name <input type="text" id="ruleTesterName" placeholder="e.g. Nimali" style="width:140px"></label>
+      </div>
+      <div class="rule-add">
+        <textarea id="ruleNewText" rows="2" placeholder="Add a rule directly, e.g. &quot;Never promise a commission rate; say the team will confirm it.&quot;"></textarea>
+        <button class="btn" id="btnRuleAdd">Add rule</button>
+      </div>
+      <div id="teamRulesList"></div>
+    </div>
   </section>
 
   <!-- ===================================================== Partner Chats -->
@@ -321,10 +336,9 @@
       </div>
       <div class="setting-row">
         <div class="setting-copy">
-          <span class="setting-title">Follow-up window</span>
-          <span class="setting-desc">Days of silence before a contacted partner is marked unresponsive.</span>
+          <span class="setting-title">Follow-up timing</span>
+          <span class="setting-desc">Fixed: 20h after the partner's last message, while their 24h WhatsApp window is still open, PC Agent sends one nudge written for where the chat stopped, but only if it stalled midway with no clear decision or next step (never on outreach they haven't answered; if it skips, the reason is noted in the chat). Switch to the second number (if any) at 24h, marked unresponsive after 3 days. A partner reply resets it.</span>
         </div>
-        <input type="number" id="setFollowUpDays" min="1" max="30">
       </div>
       <div class="setting-row">
         <div class="setting-copy">
@@ -350,6 +364,15 @@
       <div class="toolbar" style="margin-top:10px">
         <button class="btn" id="btnSaveOpeningTemplate">Save opening message</button>
         <span class="muted" id="openingTemplateSaveStatus"></span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Brief questions</h2>
+      <p class="muted">Once a partner is interested, PC Agent asks these one per message, in this order, skipping anything already answered. One question per line. Questions for a single partner are added in that partner's report. A partner with 5 or fewer products is closed politely as Not agreed.</p>
+      <textarea id="setBriefQuestions" style="min-height:110px; font-family:inherit; font-size:14px;"></textarea>
+      <div class="toolbar" style="margin-top:10px">
+        <button class="btn" id="btnSaveBriefQuestions">Save brief questions</button>
+        <span class="muted" id="briefQuestionsSaveStatus"></span>
       </div>
     </div>
 
@@ -390,6 +413,7 @@
     <div class="card settings-card">
       <h2>Partner Central team contacts</h2>
       <p class="muted">Human-intervention and partner-agreed alerts go to everyone listed here, by email and WhatsApp. Up to 3 of each.</p>
+      <div id="alertRecipientsNote" class="note-box"></div>
       <div class="setting-row">
         <div class="setting-copy">
           <span class="setting-title">Emails</span>
@@ -418,6 +442,51 @@
         <span class="muted" id="pcContactsSaveStatus"></span>
       </div>
       <div id="pcContactsTestResults" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card settings-card">
+      <h2>WhatsApp sending</h2>
+      <p class="muted">Controls whether partner-facing messages (openings, PC Agent replies, nudges, your own messages from Partner Chats) really go out over WhatsApp.</p>
+      <div id="waReadiness" class="note-box"></div>
+      <div class="setting-row">
+        <div class="setting-copy">
+          <span class="setting-title">Live sending</span>
+          <span class="setting-desc">Off = simulation: every message is only logged and shown as "simulated — not sent". On = messages are really sent to the partner's WhatsApp.</span>
+        </div>
+        <label class="switch-label"><input type="checkbox" id="setWhatsappLive"> <span id="setWhatsappLiveLabel">Off</span></label>
+      </div>
+      <div class="setting-row">
+        <div class="setting-copy">
+          <span class="setting-title">Outreach template name</span>
+          <span class="setting-desc">An approved Meta template used when the partner hasn't messaged in the last 24h (the cold opening and the second-number opening; nudges only go out inside the window). WhatsApp rejects plain text there. Leave empty and those sends fail visibly instead.</span>
+        </div>
+        <input type="text" id="setWaTemplate" placeholder="e.g. kogul_partner_intro" aria-label="Outreach template name">
+      </div>
+      <div class="setting-row">
+        <div class="setting-copy">
+          <span class="setting-title">Template language code</span>
+          <span class="setting-desc">The language the template was approved in, e.g. en_US or en.</span>
+        </div>
+        <input type="text" id="setWaTemplateLang" placeholder="en_US" aria-label="Template language code">
+      </div>
+      <div class="setting-row">
+        <div class="setting-copy">
+          <span class="setting-title">Team alert template name</span>
+          <span class="setting-desc">For alerts to the Partner Central team's own WhatsApp (hot lead, needs a human). WhatsApp only delivers plain text to someone who messaged your business number in the last 24 hours, so register a UTILITY template with one variable, e.g. "PC Agent alert: {{1}}", and put its name here. Empty = plain text, which only arrives inside that 24h window.</span>
+        </div>
+        <input type="text" id="setWaAlertTemplate" placeholder="e.g. pc_team_alert" aria-label="Team alert template name">
+      </div>
+      <div class="setting-row">
+        <div class="setting-copy">
+          <span class="setting-title">Alert template language code</span>
+          <span class="setting-desc">The language the alert template was approved in.</span>
+        </div>
+        <input type="text" id="setWaAlertTemplateLang" placeholder="en_US" aria-label="Alert template language code">
+      </div>
+      <div class="toolbar" style="margin-top:4px">
+        <button class="btn" id="btnSaveWhatsapp">Save WhatsApp settings</button>
+        <span class="muted" id="waSaveStatus"></span>
+      </div>
     </div>
   </section>
 
@@ -516,23 +585,41 @@ const VALID_TABS = new Set($$('#mainTabs button').map(b => b.dataset.tab));
 
 function switchTab(tabName, pushHash) {
   if (!VALID_TABS.has(tabName)) tabName = 'dashboard';
-  $$('#mainTabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tabName));
+  $$('#mainTabs button').forEach(b => {
+    const on = b.dataset.tab === tabName;
+    b.classList.toggle('active', on);
+    b.setAttribute('role', 'tab');
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
   $$('main > section').forEach(s => s.classList.remove('active'));
   $('#tab-' + tabName).classList.add('active');
   if (pushHash !== false && location.hash !== '#' + tabName) {
     history.pushState(null, '', '#' + tabName);
   }
-  if (tabName === 'dashboard') loadDashboard();
-  if (tabName === 'pipeline') loadPipeline();
-  if (tabName === 'categories') loadCategories();
-  if (tabName === 'koguchat') loadKoguChat();
-  if (tabName === 'simulate') loadSimulationList();
-  if (tabName === 'partnerchats') loadPartnerList();
-  if (tabName === 'settings') loadSettings();
-  if (tabName === 'pcsettings') loadSettings();
-  if (tabName === 'costs') loadCosts();
-  if (tabName === 'missingitems') loadMissingItems();
-  if (tabName === 'rejections') loadRejections();
+  const loaders = {
+    dashboard: loadDashboard, pipeline: loadPipeline, categories: loadCategories, koguchat: loadKoguChat,
+    simulate: () => { loadTeamRules(); return loadSimulationList(); }, partnerchats: loadPartnerList, settings: loadSettings,
+    pcsettings: loadSettings, costs: loadCosts, missingitems: loadMissingItems, rejections: loadRejections,
+  };
+  if (loaders[tabName]) safeLoad(tabName, loaders[tabName]);
+}
+
+// One failing request or one malformed row must not silently blank a whole
+// tab: any loader error is shown at the top of that tab instead.
+async function safeLoad(tabName, fn) {
+  const section = $('#tab-' + tabName);
+  let box = section.querySelector('.tab-error');
+  if (box) box.remove();
+  try {
+    await fn();
+  } catch (e) {
+    console.error(`[${tabName}]`, e);
+    box = document.createElement('div');
+    box.className = 'tab-error';
+    box.setAttribute('role', 'alert');
+    box.textContent = `Couldn't load this tab: ${e && e.message ? e.message : e}. Try again, or reload the page.`;
+    section.prepend(box);
+  }
 }
 
 $$('#mainTabs button').forEach(btn => {
@@ -542,10 +629,64 @@ $$('#mainTabs button').forEach(btn => {
 // Browser back/forward between tabs.
 window.addEventListener('popstate', () => switchTab(location.hash.slice(1), false));
 
-async function jget(url) { const r = await fetch(url); return r.json(); }
+// Every response comes back as an object with `ok`: a non-2xx or non-JSON
+// answer (e.g. a 500 page or a login prompt) becomes {ok:false, error}
+// instead of throwing somewhere deep inside a render.
+async function readJson(r) {
+  let body = null;
+  try { body = await r.json(); } catch { body = null; }
+  if (body && typeof body === 'object') {
+    if (!r.ok && body.ok === undefined) body.ok = false;
+    if (!r.ok && !body.error) body.error = `HTTP ${r.status}`;
+    return body;
+  }
+  return {ok: false, error: `HTTP ${r.status}${r.statusText ? ' ' + r.statusText : ''}`};
+}
+async function jget(url) {
+  try { return await readJson(await fetch(url)); }
+  catch (e) { return {ok: false, error: 'network error: ' + (e.message || e)}; }
+}
 async function jpost(url, body) {
-  const r = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
-  return r.json();
+  try {
+    return await readJson(await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                           body: JSON.stringify(body || {})}));
+  } catch (e) { return {ok: false, error: 'network error: ' + (e.message || e)}; }
+}
+async function jdelete(url) {
+  try { return await readJson(await fetch(url, {method: 'DELETE'})); }
+  catch (e) { return {ok: false, error: 'network error: ' + (e.message || e)}; }
+}
+
+function showToast(text, kind) {
+  let wrap = $('#toastWrap');
+  if (!wrap) {
+    wrap = document.createElement('div');
+    wrap.id = 'toastWrap';
+    wrap.setAttribute('aria-live', 'polite');
+    document.body.appendChild(wrap);
+  }
+  const t = document.createElement('div');
+  t.className = 'toast' + (kind ? ' ' + kind : '');
+  t.textContent = text;
+  wrap.appendChild(t);
+  setTimeout(() => t.remove(), kind === 'error' ? 9000 : 5000);
+}
+
+// Only http(s) links are rendered as clickable; anything else (javascript:,
+// data:, garbage from a scraped page) becomes an inert '#'.
+function safeUrl(u) {
+  const s = String(u || '').trim();
+  return /^https?:\/\//i.test(s) ? escapeHtml(s) : '#';
+}
+
+// A row in the message list: what was really sent vs. only logged.
+function sendStatusLabel(m) {
+  if (m.sender === 'system') return '';
+  const st = m.send_status || (m.simulated ? 'simulated' : 'sent');
+  if (m.sender === 'partner') return '';
+  if (st === 'simulated') return ' <span class="muted">(simulated — not sent)</span>';
+  if (st === 'failed') return ` <span class="send-failed">NOT delivered${m.send_error ? ': ' + escapeHtml(m.send_error) : ''}</span>`;
+  return ` <span class="send-ok">✓ ${escapeHtml(st)}</span>`;
 }
 // 2026-10-06, user: "make sure the kogul has the ability to send images,
 // files, read images if recieved, also in chat stimulation and partner
@@ -555,8 +696,8 @@ async function jpostFiles(url, fields, files) {
   const fd = new FormData();
   for (const [k, v] of Object.entries(fields || {})) fd.append(k, v);
   for (const f of (files || [])) fd.append('files', f);
-  const r = await fetch(url, {method: 'POST', body: fd});
-  return r.json();
+  try { return await readJson(await fetch(url, {method: 'POST', body: fd})); }
+  catch (e) { return {ok: false, error: 'network error: ' + (e.message || e)}; }
 }
 async function pollJob(url, onTick) {
   // onTick(secondsElapsed) — optional, called after every poll so a caller
@@ -579,6 +720,7 @@ async function pollJob(url, onTick) {
 // breakdown lives on its own Pipeline tab (see loadPipeline below).
 async function loadDashboard() {
   const d = await jget('/api/dashboard');
+  if (!d.ok) throw new Error(d.error || 'dashboard failed to load');
   $('#dashStatUncontacted').textContent = d.uncontacted ?? 0;
   $('#dashStatAgreed').textContent = d.agreed ?? 0;
   $('#dashStatUnresponsive').textContent = d.unresponsive ?? 0;
@@ -610,6 +752,7 @@ async function loadPipeline() {
   if (from) qs.set('date_from', from);
   if (to) qs.set('date_to', to);
   const d = await jget('/api/dashboard' + (qs.toString() ? '?' + qs.toString() : ''));
+  if (!d.ok) throw new Error(d.error || 'pipeline failed to load');
   $('#dashRangeLabel').textContent = (from || to)
     ? `${from || 'the beginning'} to ${to || 'now'}`
     : 'All time';
@@ -629,14 +772,15 @@ async function loadPipeline() {
   // others — this is "how often does a handover happen", not a
   // mutually-exclusive slice.
   const grandTotal = d.total_partners || 0;
-  const pct = n => grandTotal ? Math.max(4, Math.min(100, Math.round((n / grandTotal) * 100))) : 0;
+  // a non-zero count always shows a sliver; zero shows nothing
+  const pct = n => (grandTotal && n) ? Math.max(4, Math.min(100, Math.round((n / grandTotal) * 100))) : 0;
   $('#barAgreed').style.width = pct(d.agreed ?? 0) + '%';
   $('#barNeedsHandover').style.width = pct(d.needs_handover ?? 0) + '%';
   $('#barUnresponsive').style.width = pct(d.unresponsive ?? 0) + '%';
   $('#barNotAgreed').style.width = pct(d.not_agreed ?? 0) + '%';
 }
 
-$('#btnDashApplyRange').addEventListener('click', loadPipeline);
+$('#btnDashApplyRange').addEventListener('click', () => safeLoad('pipeline', loadPipeline));
 $('#btnDashAllTime').addEventListener('click', () => {
   $('#dashDateFrom').value = '';
   $('#dashDateTo').value = '';
@@ -661,6 +805,11 @@ $$('.pipeline-stage').forEach(el => {
 
 // Dashboard's own (non-date-filtered) stat cards also drill into Partner
 // Chats, same pattern, just always all-time.
+$$('.pipeline-stage, #tab-dashboard .stat[data-stage]').forEach(el => {
+  el.setAttribute('role', 'button');
+  el.setAttribute('tabindex', '0');
+  el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.click(); } });
+});
 $$('#tab-dashboard .stat[data-stage]').forEach(el => {
   el.style.cursor = 'pointer';
   el.addEventListener('click', () => {
@@ -734,7 +883,7 @@ function playHandoverAlert() {
 }
 
 function escapeHtml(s) {
-  return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  return (s == null ? '' : String(s)).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
 // ------------------------------------------------------------- attachments
@@ -757,7 +906,7 @@ function renderAttachmentsHtml(atts) {
   if (!atts || !atts.length) return '';
   const parts = atts.map(a => {
     if (a.kind === 'image') {
-      return `<img class="msg-att-image" src="${attachmentUrl(a)}" alt="${escapeHtml(a.orig || 'image')}" loading="lazy" onclick="window.open('${attachmentUrl(a)}','_blank')">`;
+      return `<a href="${attachmentUrl(a)}" target="_blank" rel="noopener"><img class="msg-att-image" src="${attachmentUrl(a)}" alt="${escapeHtml(a.orig || 'image')}" loading="lazy"></a>`;
     }
     return `<a class="msg-att-file" href="${attachmentUrl(a)}" target="_blank" rel="noopener">${FILE_ICON}${escapeHtml(a.orig || 'file')}</a>`;
   }).join('');
@@ -920,7 +1069,7 @@ const SOURCE_LABEL = {
 // 2026-10-08, user: "for each business identified can i get the demand
 // calculation for the product category they sell with data" — labels for
 // brand_discovery.attach_demand_evidence's real (never guessed) sources.
-const DEMAND_SOURCE_LABEL = {google_ads: 'Google Ads (Sri Lanka)', google_ads_international: 'Google Ads (diaspora)', ga4: 'Kapruka GA4', daraz: 'Daraz'};
+const DEMAND_SOURCE_LABEL = {google_ads: 'Google Ads (Sri Lanka)', google_ads_international: 'Google Ads (diaspora)', ga4: 'Kapruka GA4', daraz: 'Daraz', daraz_thin: 'Daraz (thin Kapruka page)'};
 
 // 2026-10-08, user screenshot feedback: the old flat badge list ran every
 // entry together with no grouping (a Sri Lanka figure and its matching
@@ -941,12 +1090,23 @@ const DEMAND_SOURCE_LABEL = {google_ads: 'Google Ads (Sri Lanka)', google_ads_in
 // box.innerHTML's template build aborts the entire render, so even the 20
 // other items with no demand evidence vanished along with it). Hoisted to
 // true top-level scope so both callers share the one definition.
+// 2026-10-14: the partner report is the decision point — pending cards show its verdict.
+function reportSummaryChip(r) {
+  if (!r || !r.built) return `<span class="rpt-chip lvl-unknown"><span class="spinner"></span> ${r && r.queued ? 'Partner report queued…' : 'Building partner report…'}</span>`;
+  const bits = [];
+  if (r.ranges) bits.push(r.gaps ? `${r.gaps} of ${r.ranges} ranges Kapruka lacks` : 'Kapruka already has their kind');
+  if (r.skus != null) bits.push(`${r.sku_lower_bound ? '≥' : ''}${fmtNum(r.skus)} products`);
+  if (r.location) bits.push(r.in_colombo === 'yes' ? `${r.location} · Colombo` : r.location);
+  if (r.brand_value === 'high' || r.brand_value === 'medium') bits.push(`${r.brand_value} brand value`);
+  return `<span class="rpt-chip lvl-${r.level}"><strong>${escapeHtml(r.label)}</strong>${bits.length ? ' · ' + escapeHtml(bits.join(' · ')) : ''}</span>`;
+}
+
 function renderDemandEvidence(evidence) {
   const adsByKeyword = new Map();  // keyword -> {sl, intl}
-  const ga4Rows = [], darazRows = [];
+  const ga4Rows = [], darazRows = [], thinRows = [];
   for (const e of evidence) {
     if (e.source === 'google_ads' || e.source === 'google_ads_international') {
-      const kw = (e.label.match(/^"([^"]+)"/) || [, e.label])[1].replace(/\s+sri lanka$/i, '');
+      const kw = ((e.label || '').match(/^"([^"]+)"/) || [, e.label || ''])[1].replace(/\s+sri lanka$/i, '');
       const entry = adsByKeyword.get(kw) || {sl: null, intl: null};
       if (e.source === 'google_ads') entry.sl = e.value;
       else entry.intl = e.value;
@@ -955,6 +1115,8 @@ function renderDemandEvidence(evidence) {
       ga4Rows.push(e);
     } else if (e.source === 'daraz') {
       darazRows.push(e);
+    } else if (e.source === 'daraz_thin') {
+      thinRows.push(e);
     }
   }
 
@@ -966,8 +1128,8 @@ function renderDemandEvidence(evidence) {
         <div class="demand-row">
           <span class="demand-kw">${escapeHtml(kw)}</span>
           <span class="demand-figs">
-            ${v.sl != null ? `<span title="Sri Lanka, avg monthly searches"><span class="demand-geo-tag">SL</span> <strong>${v.sl.toLocaleString()}</strong></span>` : ''}
-            ${v.intl != null ? `<span title="Combined across UK, Australia, USA, Canada, UAE, avg monthly searches"><span class="demand-geo-tag">Intl</span> <strong>${v.intl.toLocaleString()}</strong></span>` : ''}
+            ${v.sl != null ? `<span title="Sri Lanka, avg monthly searches"><span class="demand-geo-tag">SL</span> <strong>${fmtNum(v.sl)}</strong></span>` : ''}
+            ${v.intl != null ? `<span title="Combined across UK, Australia, USA, Canada, UAE, avg monthly searches"><span class="demand-geo-tag">Intl</span> <strong>${fmtNum(v.intl)}</strong></span>` : ''}
           </span>
         </div>
       `).join('')}
@@ -979,7 +1141,7 @@ function renderDemandEvidence(evidence) {
       ${ga4Rows.map(e => `
         <div class="demand-row">
           <span class="demand-kw">${escapeHtml(e.label.replace(/^Kapruka sales — /, ''))}</span>
-          <span class="demand-figs">${e.value.toLocaleString()} sold${(e.unit.match(/LKR\s?[\d,]+/)||[])[0] ? ', ' + e.unit.match(/LKR\s?[\d,]+/)[0] : ''}</span>
+          <span class="demand-figs">${fmtNum(e.value)} sold${((e.unit || '').match(/LKR\s?[\d,]+/)||[])[0] ? ', ' + (e.unit || '').match(/LKR\s?[\d,]+/)[0] : ''}</span>
         </div>
       `).join('')}
     </div>`;
@@ -990,7 +1152,21 @@ function renderDemandEvidence(evidence) {
       ${darazRows.map(e => `
         <div class="demand-row">
           <span class="demand-kw">${escapeHtml(e.label.replace(/^Daraz category gap — /, ''))}</span>
-          <span class="demand-figs">LKR ${e.value.toLocaleString()}</span>
+          <span class="demand-figs">${fmtLkr(e.value)}</span>
+        </div>
+      `).join('')}
+    </div>`;
+  }
+  // 2026-10-14: Expand Catalog lens — we have the page, Daraz has demand, our stock is thin
+  if (thinRows.length) {
+    html += `<div class="demand-group">
+      <div class="demand-group-title">Thin Kapruka page, Daraz demand (expand catalog)</div>
+      ${thinRows.map(e => `
+        <div class="demand-row">
+          <span class="demand-kw">${e.kapruka_url
+            ? `<a class="link" target="_blank" rel="noopener" href="${safeUrl(e.kapruka_url)}">${escapeHtml(e.label.replace(/^Daraz demand, thin Kapruka page — /, ''))}</a>`
+            : escapeHtml(e.label.replace(/^Daraz demand, thin Kapruka page — /, ''))}</span>
+          <span class="demand-figs">${fmtLkr(e.value)}${e.product_count != null ? ` · we list ${fmtNum(e.product_count)}` : ''}</span>
         </div>
       `).join('')}
     </div>`;
@@ -1015,7 +1191,7 @@ function renderCategories() {
     <div class="card ${isBrand ? 'brand-card' : ''}" data-cat-id="${cat.id}">
       <div class="brand-top">
         <div class="brand-meta-row">
-          <span class="badge ${statusBadgeClass}">${escapeHtml(cat.review_status.replace('_',' '))}</span>
+          <span class="badge ${statusBadgeClass}">${escapeHtml(String(cat.review_status || '').replace('_',' '))}</span>
           ${isBrand ? `<span class="badge tag">${escapeHtml(cat.department)}</span>` : ''}
           ${cat.priority_score != null ? `<span class="badge tag" title="Priority score: verdict strength + demand, higher = expand sooner">Priority ${Number(cat.priority_score).toFixed(2)}</span>` : ''}
           ${cat.source ? `<span class="badge tag">${escapeHtml(SOURCE_LABEL[cat.source] || cat.source)}</span>` : ''}
@@ -1029,13 +1205,13 @@ function renderCategories() {
         ${isBrand ? `<span class="brand-headline">${escapeHtml(cat.concept)}</span>` : `<span class="brand-headline" style="font-size:17px">${escapeHtml(cat.concept)}</span><span class="brand-sub">${escapeHtml(cat.department)}</span>`}
         <div class="brand-sub">
           ${isBrand && cat.business_url ? `
-            <a class="link" target="_blank" rel="noopener" href="${escapeHtml(cat.business_url)}">Visit website ↗</a>
+            <a class="link" target="_blank" rel="noopener" href="${safeUrl(cat.business_url)}">Visit website ↗</a>
           ` : `
             <a class="link" target="_blank" rel="noopener"
                href="https://www.google.com/search?q=${encodeURIComponent(cat.concept + ' sri lanka')}">Google search ↗</a>
           `}
           ${cat.source_ref && cat.source_ref.includes('daraz.lk') ? `
-            <a class="link" style="margin-left:14px" target="_blank" rel="noopener" href="${escapeHtml(cat.source_ref)}">Daraz category ↗</a>
+            <a class="link" style="margin-left:14px" target="_blank" rel="noopener" href="${safeUrl(cat.source_ref)}">Daraz category ↗</a>
           ` : ''}
         </div>
 
@@ -1059,7 +1235,7 @@ function renderCategories() {
               ? `<a class="wa-chip" href="https://wa.me/${escapeHtml(cat.brand_whatsapp)}" target="_blank" rel="noopener" title="Verified WhatsApp link found on their site">💬 WhatsApp</a>`
               : (cat.brand_phones || []).map(p => `<a class="wa-chip unverified" href="https://wa.me/${escapeHtml(p.replace(/\D/g,''))}" target="_blank" rel="noopener" title="Not a confirmed WhatsApp number — this just tries their phone number on WhatsApp">💬 Try WhatsApp</a>`).slice(0,1).join('')}
             ${(cat.brand_emails || []).map(e => `<a class="email-chip" href="mailto:${escapeHtml(e)}">✉️ ${escapeHtml(e)}</a>`).join('')}
-            ${(cat.social_links || []).map(s => `<a href="${escapeHtml(s)}" target="_blank" rel="noopener">${socialLabel(s)} ↗</a>`).join('')}
+            ${(cat.social_links || []).map(s => `<a href="${safeUrl(s)}" target="_blank" rel="noopener">${socialLabel(s)} ↗</a>`).join('')}
           </div>
         ` : ''}
         ${isBrand && !(cat.brand_phones||[]).length ? `
@@ -1094,7 +1270,7 @@ function renderCategories() {
           <div class="muted" style="font-size:12px; margin-top:10px">
             Search terms tried (live Kapruka product count is the union across all, deduped):
             ${m.live_kapruka_search_terms_tried.map(t => `
-              <a class="link" style="margin-right:10px" target="_blank" rel="noopener" href="${escapeHtml(t.search_url || '#')}">
+              <a class="link" style="margin-right:10px" target="_blank" rel="noopener" href="${safeUrl(t.search_url)}">
                 "${escapeHtml(t.term)}"${t.ok ? ` (${t.count})` : ' (failed)'} ↗
               </a>`).join('')}
           </div>
@@ -1113,14 +1289,22 @@ function renderCategories() {
         </div>
       ` : '')}
 
-      ${cat.review_status === 'pending_review' ? `
+      ${isBrand && cat.review_status !== 'pending_review' ? `
+        <button type="button" class="btn report-btn" data-report="${cat.id}">📋 Partner report</button>
+      ` : ''}
+      ${cat.review_status === 'pending_review' && isBrand ? `
+        <div class="brand-actions brand-decide">
+          ${reportSummaryChip(cat.report)}
+          <button class="btn" data-report="${cat.id}">Open partner report to decide →</button>
+        </div>
+      ` : cat.review_status === 'pending_review' ? `
         <div class="brand-actions">
-          <button class="btn" data-approve="${cat.id}" data-is-brand="${isBrand ? '1' : '0'}">${isBrand ? 'Approve → reach out' : 'Approve → source partners'}</button>
-          <button class="btn secondary" data-reject="${cat.id}">Reject</button>
+          <button class="btn" data-approve="${cat.id}" data-name="${escapeHtml(cat.concept)}" data-is-brand="0">Approve → source partners</button>
+          <button class="btn secondary" data-reject="${cat.id}" data-name="${escapeHtml(cat.concept)}">Reject</button>
         </div>
       ` : (cat.review_status === 'approved' ? `
         <div class="brand-actions">
-          <span class="muted">${isBrand ? 'Opening message sent' : `${cat.partners.length} partner(s) sourced`}</span>
+          <span class="muted">${isBrand ? (window.KOGUL_LIVE ? 'Approved — outreach started' : 'Approved — opening message logged (simulation)') : `${cat.partners.length} partner(s) sourced`}</span>
         </div>
       ` : '')}
 
@@ -1137,7 +1321,7 @@ function renderCategories() {
                     ${p.is_specialist ? `<span class="badge approved" style="margin-left:6px" title="${escapeHtml(p.specialization_reason || '')}">specialist</span>` : ''}
                     ${p.specialization_reason && !p.is_specialist ? `<div class="muted" style="font-size:11px">${escapeHtml(p.specialization_reason)}</div>` : ''}
                   </td>
-                  <td>${p.url ? `<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener">${escapeHtml((p.url||'').replace(/^https?:\/\//,'').split('/')[0])}</a>` : escapeHtml(p.phone || '—')}${p.is_landline ? ' (landline)' : ''}</td>
+                  <td>${p.url ? `<a href="${safeUrl(p.url)}" target="_blank" rel="noopener">${escapeHtml((p.url||'').replace(/^https?:\/\//,'').split('/')[0])}</a>` : escapeHtml(p.phone || '—')}${p.is_landline ? ' (landline)' : ''}</td>
                   <td>${escapeHtml(p.source || '—')}</td>
                   <td><span class="badge ${p.status}">${p.status.replace('_',' ')}</span></td>
                   <td><button class="btn danger" style="padding:3px 9px;font-size:11px" data-remove-partner="${p.id}">Remove</button></td>
@@ -1156,50 +1340,58 @@ function renderCategories() {
   ` : '');
 
   $$('[data-approve]', box).forEach(btn => btn.addEventListener('click', () => approveCategory(btn.dataset.approve, btn)));
-  $$('[data-reject]', box).forEach(btn => btn.addEventListener('click', () => rejectCategory(btn.dataset.reject)));
+  $$('[data-reject]', box).forEach(btn => btn.addEventListener('click', () => rejectCategory(btn.dataset.reject, btn.dataset.name)));
   $$('[data-remove-partner]', box).forEach(btn => btn.addEventListener('click', () => removePartner(btn.dataset.removePartner, btn)));
 }
 
+// Results go to a toast, not an inline status line — the list re-renders
+// right after, which used to wipe the message before anyone could read it.
 async function removePartner(partnerId, btn) {
-  const row = btn.closest('tr');
-  const card = btn.closest('.card');
+  if (!confirm('Remove this partner from outreach? PC Agent will try to find a replacement.')) return;
   btn.disabled = true;
   btn.textContent = '...';
   const r = await jpost(`/api/partners/${partnerId}/remove`, {});
-  const statusEl = card ? card.querySelector('[data-refill-status]') : null;
-  if (statusEl) {
-    if (r.refilled) statusEl.textContent = `Removed — refilled with ${r.new_partner.name}.`;
-    else statusEl.textContent = `Removed — could not refill: ${r.refill_error || 'unknown reason'}`;
-  }
+  if (!r.ok) showToast('Remove failed: ' + (r.error || 'unknown error'), 'error');
+  else if (r.refilled) showToast(`Removed — refilled with ${r.new_partner.name}.`);
+  else showToast(`Removed — could not refill: ${r.refill_error || 'no replacement found'}`, 'warn');
   loadCategories();
 }
 
 async function approveCategory(catId, btn) {
   const isBrand = btn.dataset.isBrand === '1';
+  const name = btn.dataset.name || 'this business';
+  const live = window.KOGUL_LIVE === true;
+  const what = isBrand ? `reach out to ${name}` : `source partners for "${name}" and message them`;
+  if (!confirm(`Approve and ${what}?\n\n` + (live
+      ? 'WhatsApp is LIVE: the opening message will really be sent.'
+      : 'Simulation mode: the opening message is only logged, nothing is sent.'))) return;
   btn.disabled = true;
   btn.textContent = isBrand ? 'Sending opening message...' : 'Sourcing partners + sending opening messages...';
   const start = await jpost(`/api/categories/${catId}/approve`, {});
-  if (!start.ok) { alert('Error: ' + start.error); loadCategories(); return; }
+  if (!start.ok) { showToast('Error: ' + start.error, 'error'); loadCategories(); return; }
   const result = await pollJob('/api/categories/approve/poll/' + start.job_id);
   if (result.status !== 'done') {
-    alert('Error: ' + result.error);
+    showToast('Approve failed: ' + result.error + ' — it is back in the review list, you can retry.', 'error');
   } else if (result.open_failures && result.open_failures.length) {
-    alert(`${result.opened}/${result.partners_found} partners opened successfully. ` +
-          `${result.open_failures.length} failed to open — use "Start outreach" on those chats to retry.`);
+    const why = result.open_failures.map(f => f.error).filter(Boolean)[0];
+    showToast(`${result.opened}/${result.partners_found} opening message(s) went out. ` +
+              `${result.open_failures.length} did not${why ? ' (' + why + ')' : ''} — use "Start outreach" on those chats to retry.`, 'warn');
+  } else {
+    showToast(result.live ? `Opening message sent to ${result.opened} partner(s).`
+                          : `Opening message logged for ${result.opened} partner(s) (simulation — not sent).`);
   }
   loadCategories();
 }
 
-// 2026-10-13, user: "when rejecting weekly outreach i want why it is
-// getting rjected... so agent should learn from that when doing weekly
-// outreach" — reason is optional (an empty/cancelled prompt still rejects,
-// same fail-open discipline as elsewhere in this app) but strongly
-// encouraged since an unexplained reject teaches PC Agent nothing; see
-// api_category_reject + brand_discovery._recent_reject_reasons for where
-// it actually gets used.
-async function rejectCategory(catId) {
-  const reason = (window.prompt('Why reject this business? (helps PC Agent avoid similar ones next time)') || '').trim();
-  await jpost(`/api/categories/${catId}/reject`, { reason });
+// A reason is required: it is the only thing that teaches next week's
+// sourcing what to avoid (see brand_discovery._recent_reject_reasons).
+async function rejectCategory(catId, name) {
+  const raw = window.prompt(`Why reject ${name || 'this business'}? (required — PC Agent uses this to avoid similar ones next time)`);
+  if (raw === null) return;  // Cancel = don't reject
+  const reason = raw.trim();
+  if (!reason) { showToast('Not rejected — a reason is required.', 'warn'); return; }
+  const r = await jpost(`/api/categories/${catId}/reject`, { reason });
+  if (!r.ok) showToast('Reject failed: ' + (r.error || 'unknown error'), 'error');
   loadCategories();
 }
 
@@ -1447,7 +1639,7 @@ async function openSimulation(id, opts) {
   simPendingJob = null;
   loadSimulationList();
   const d = await jget(`/api/simulations/${id}/messages`);
-  if (!d.ok) return;
+  if (!d.ok) { showToast('Could not open scenario: ' + (d.error || 'unknown error'), 'error'); return; }
   const sim = d.simulation;
   const pane = $('#simPane');
   pane.innerHTML = `
@@ -1520,7 +1712,9 @@ async function openSimulation(id, opts) {
   });
 
   $('#btnSimMarkAgreed').addEventListener('click', async () => {
-    await jpost(`/api/simulations/${id}/set_status`, {status: 'agreed'});
+    if (!confirm('Mark this test scenario as AGREED?\n\nThis sends a REAL email + WhatsApp alert to the Partner Central team (labelled [SIMULATION]).')) return;
+    const r = await jpost(`/api/simulations/${id}/set_status`, {status: 'agreed'});
+    if (!r.ok) showToast('Failed: ' + (r.error || 'unknown error'), 'error');
     openSimulation(id);
   });
   $('#btnSimMarkUnresponsive').addEventListener('click', async () => {
@@ -1539,9 +1733,10 @@ async function openSimulation(id, opts) {
   // backend route needed, the messages are already fetched above). Sender
   // labelled as "PC Agent" / the fictional business name so the export
   // reads like a real chat log, not raw sender keys.
-  $('#btnExportSim').addEventListener('click', () => {
+  $('#btnExportSim').addEventListener('click', async () => {
     const SIM_EXPORT_WHO = {kogul: 'PC Agent', system: 'SYSTEM'};
-    const lines = (d.messages || []).map(m => {
+    const fresh = await jget(`/api/simulations/${id}/messages`);  // include turns sent since this pane opened
+    const lines = ((fresh.ok ? fresh.messages : d.messages) || []).map(m => {
       const who = SIM_EXPORT_WHO[m.sender] || sim.business_name;
       const ts = m.created_at ? ` [${m.created_at}]` : '';
       return `${who}${ts}: ${m.body}`;
@@ -1558,12 +1753,14 @@ async function openSimulation(id, opts) {
 
   $('#btnClearSim').addEventListener('click', async () => {
     if (!confirm(`Clear this conversation and have PC Agent start over?`)) return;
-    await fetch(`/api/simulations/${id}/clear`, {method: 'POST'});
+    const r = await jpost(`/api/simulations/${id}/clear`, {});
+    if (!r.ok) { showToast('Clear failed: ' + (r.error || 'unknown error'), 'error'); return; }
     openSimulation(id, {autoOpen: true});
   });
   $('#btnDeleteSim').addEventListener('click', async () => {
     if (!confirm(`Delete the "${sim.business_name}" scenario? This can't be undone.`)) return;
-    await fetch(`/api/simulations/${id}`, {method: 'DELETE'});
+    const r = await jdelete(`/api/simulations/${id}`);
+    if (!r.ok) { showToast('Delete failed: ' + (r.error || 'unknown error'), 'error'); return; }
     currentSimId = null;
     $('#simPane').innerHTML = emptyState('chat', 'Scenario deleted. Start a new one above.');
     loadSimulationList();
@@ -1579,6 +1776,163 @@ async function openSimulation(id, opts) {
   }
 }
 
+// ------------------------------------------------------- Team rules
+// 2026-10-14, user: the Partner Central team tests in Simulate as Partner and
+// adds rules when they spot a problem; saved rules go into every prompt
+// (brain.read_brief) from the next message on. Flag -> describe -> (AI draft)
+// -> save -> optionally retry that same reply to see the rule work.
+const _simMsgBodies = {};
+
+function _testerName() {
+  try { return localStorage.getItem('kogulTesterName') || ''; } catch (e) { return ''; }
+}
+$('#ruleTesterName').value = _testerName();
+$('#ruleTesterName').addEventListener('change', e => {
+  try { localStorage.setItem('kogulTesterName', e.target.value.trim()); } catch (err) { /* private window */ }
+});
+
+async function loadTeamRules() {
+  const box = $('#teamRulesList');
+  const d = await jget('/api/rules');
+  if (!d.ok) { box.innerHTML = `<p class="muted">Could not load rules: ${escapeHtml(d.error || 'unknown error')}</p>`; return; }
+  if (!d.rules.length) { box.innerHTML = '<p class="muted">No team rules yet.</p>'; return; }
+  const active = d.rules.filter(r => r.active).length;
+  box.innerHTML = `<p class="muted" style="font-size:12.5px">${active} of ${d.rules.length} rule(s) active.</p>` + d.rules.map(r => `
+    <div class="rule-row ${r.active ? '' : 'off'}">
+      <label class="rule-toggle" title="On = PC Agent follows it"><input type="checkbox" data-rule-toggle="${r.id}" ${r.active ? 'checked' : ''}></label>
+      <div class="rule-body">
+        <div class="rule-text">${escapeHtml(r.rule)}</div>
+        <div class="rule-meta">${escapeHtml(r.added_by || 'unnamed')} · ${escapeHtml((r.created_at || '').replace('T', ' ').slice(0, 16))}${r.simulation_name ? ` · from test "${escapeHtml(r.simulation_name)}"` : (r.simulation_id ? ' · from a deleted test' : '')}${r.updated_at ? ' · edited' : ''}</div>
+        ${r.problem ? `<div class="rule-meta">Problem seen: ${escapeHtml(r.problem)}</div>` : ''}
+        ${r.flagged_reply ? `<details class="rule-meta"><summary>Flagged reply</summary>${escapeHtml(r.flagged_reply)}</details>` : ''}
+      </div>
+      <div class="rule-actions">
+        <button type="button" class="link-btn" data-rule-edit="${r.id}">Edit</button>
+        <button type="button" class="link-btn danger" data-rule-delete="${r.id}">Delete</button>
+      </div>
+    </div>`).join('');
+  box.dataset.rules = JSON.stringify(d.rules.map(r => [r.id, r.rule]));
+}
+
+$('#teamRulesList').addEventListener('click', async ev => {
+  const editId = ev.target.closest('[data-rule-edit]')?.dataset.ruleEdit;
+  const delId = ev.target.closest('[data-rule-delete]')?.dataset.ruleDelete;
+  if (editId) {
+    const current = (JSON.parse($('#teamRulesList').dataset.rules || '[]').find(([id]) => String(id) === editId) || [])[1] || '';
+    const text = prompt('Edit the rule:', current);
+    if (text === null || !text.trim() || text.trim() === current) return;
+    const r = await jpost(`/api/rules/${editId}`, {rule: text.trim()});
+    if (!r.ok) showToast('Edit failed: ' + (r.error || 'unknown error'), 'error');
+    loadTeamRules();
+  } else if (delId) {
+    if (!confirm('Delete this rule? PC Agent stops following it from the next message. (Untick it instead to pause it.)')) return;
+    const r = await jdelete(`/api/rules/${delId}`);
+    if (!r.ok) showToast('Delete failed: ' + (r.error || 'unknown error'), 'error');
+    loadTeamRules();
+  }
+});
+$('#teamRulesList').addEventListener('change', async ev => {
+  const id = ev.target.dataset.ruleToggle;
+  if (!id) return;
+  const r = await jpost(`/api/rules/${id}`, {active: ev.target.checked});
+  if (!r.ok) showToast('Update failed: ' + (r.error || 'unknown error'), 'error');
+  loadTeamRules();
+});
+$('#btnRuleAdd').addEventListener('click', async () => {
+  const text = $('#ruleNewText').value.trim();
+  if (!text) { showToast('Write the rule first.', 'error'); return; }
+  const r = await jpost('/api/rules', {rule: text, added_by: $('#ruleTesterName').value.trim()});
+  if (!r.ok) { showToast('Could not add: ' + (r.error || 'unknown error'), 'error'); return; }
+  $('#ruleNewText').value = '';
+  showToast('Rule added. PC Agent follows it from the next message.');
+  loadTeamRules();
+});
+
+// Flag form, opened from "Flag this reply" under a PC Agent message.
+$('#simPane').addEventListener('click', ev => {
+  const btn = ev.target.closest('[data-flag]');
+  if (btn) toggleFlagForm(parseInt(btn.dataset.flag), btn.dataset.opening === '1');
+});
+
+function toggleFlagForm(msgId, isOpening) {
+  const form = $(`#flagForm-${msgId}`);
+  if (!form) return;
+  if (!form.hidden) { form.hidden = true; return; }
+  form.hidden = false;
+  if (isOpening) {
+    form.innerHTML = `<p style="margin:0">This is the fixed <strong>opening message</strong>. A rule can't change it: edit its wording in <strong>PC Agent Settings → Opening message</strong>. Flag later replies to add rules.</p>`;
+    return;
+  }
+  form.innerHTML = `
+    <label class="field">What went wrong?</label>
+    <textarea class="ff-problem" rows="2" placeholder="e.g. It quoted a commission rate. We never quote rates in chat."></textarea>
+    <div class="toolbar" style="padding:6px 0"><button type="button" class="btn secondary ff-draft">Draft a rule for me</button></div>
+    <label class="field">Rule PC Agent should follow from now on</label>
+    <textarea class="ff-rule" rows="2" placeholder="Write it yourself, or use Draft a rule for me and edit it."></textarea>
+    <div class="ff-note muted" style="font-size:12.5px"></div>
+    <div class="toolbar" style="padding:6px 0 0">
+      <button type="button" class="btn ff-save-retry">Save rule &amp; retry this reply</button>
+      <button type="button" class="btn secondary ff-save">Save rule only</button>
+      <button type="button" class="btn secondary ff-cancel">Cancel</button>
+    </div>`;
+  const q = s => form.querySelector(s);
+  q('.ff-cancel').addEventListener('click', () => { form.hidden = true; });
+  q('.ff-draft').addEventListener('click', async () => {
+    const problem = q('.ff-problem').value.trim();
+    if (!problem) { showToast('Say what went wrong first.', 'error'); return; }
+    const b = q('.ff-draft');
+    b.disabled = true; b.textContent = 'Drafting...';
+    const r = await jpost('/api/rules/draft', {problem, simulation_id: currentSimId, message_id: msgId});
+    b.disabled = false; b.textContent = 'Draft a rule for me';
+    if (!r.ok) { showToast(r.error || 'Draft failed', 'error'); return; }
+    q('.ff-rule').value = r.rule;
+    q('.ff-note').textContent = r.note || 'Draft only. Check and edit it before saving.';
+  });
+  const save = async (retry) => {
+    const rule = q('.ff-rule').value.trim();
+    if (!rule) { showToast('Write the rule (or draft one) first.', 'error'); return; }
+    const r = await jpost('/api/rules', {
+      rule, problem: q('.ff-problem').value.trim(), flagged_reply: _simMsgBodies[msgId] || '',
+      simulation_id: currentSimId, added_by: $('#ruleTesterName').value.trim(),
+    });
+    if (!r.ok) { showToast('Could not save: ' + (r.error || 'unknown error'), 'error'); return; }
+    form.hidden = true;
+    loadTeamRules();
+    if (retry) retrySimReply(msgId);
+    else showToast('Rule saved. PC Agent follows it from the next message.');
+  };
+  q('.ff-save').addEventListener('click', () => save(false));
+  q('.ff-save-retry').addEventListener('click', () => save(true));
+  q('.ff-problem').focus();
+  form.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+}
+
+async function retrySimReply(msgId) {
+  if (!currentSimId || simPendingJob) return;
+  const simId = currentSimId;
+  if (!confirm('Retry: this reply and everything after it are removed, then PC Agent answers again using the current rules. Continue?')) return;
+  const start = await jpost(`/api/simulations/${simId}/retry`, {message_id: msgId});
+  if (!start.ok) { showToast('Retry failed: ' + (start.error || 'unknown error'), 'error'); return; }
+  simPendingJob = start.job_id;
+  _simPendingSeconds = 0;
+  const d = await jget(`/api/simulations/${simId}/messages`);
+  if (currentSimId === simId) renderSimMessages(d.messages || []);
+  const result = await pollJob(`/api/simulations/poll/${start.job_id}`, secs => {
+    _simPendingSeconds = secs;
+    const el = $('#simPendingIndicator');
+    if (el && currentSimId === simId) el.textContent = simStatusText(secs);
+  });
+  if (simPendingJob === start.job_id) simPendingJob = null;
+  if (currentSimId !== simId) { loadSimulationList(); return; }
+  const d2 = await jget(`/api/simulations/${simId}/messages`);
+  renderSimMessages(d2.messages || []);
+  const badgeEl = $('#simStatusBadge');
+  if (badgeEl && d2.simulation) badgeEl.innerHTML = simStatusBadge(d2.simulation.status, d2.simulation.needs_handover);
+  loadSimulationList();
+  if (result.status !== 'done') showToast('Retry failed: ' + (result.error || 'unknown error'), 'error');
+  else showToast('Retried with the current rules.');
+}
+
 let _simPendingSeconds = 0;
 function renderSimMessages(messages) {
   const box = $('#simMsgsBox');
@@ -1587,9 +1941,18 @@ function renderSimMessages(messages) {
   // this off...)" note, or Mark Agreed/Not Agreed/Unresponsive's own log
   // line) used to render as if it were the partner's own message — same
   // .msg.system style real Partner Chats already uses, now applied here too.
+  // 2026-10-14: every PC Agent reply gets "Flag this reply" (team rules).
+  // The first PC Agent message with no partner message before it is the
+  // fixed opening template, which a rule can't change — the form says so.
+  let seenPartner = false;
+  messages.forEach(m => { _simMsgBodies[m.id] = m.body; });
   box.innerHTML = messages.map(m => {
     const cls = m.sender === 'kogul' ? 'kogul' : (m.sender === 'system' ? 'system' : 'partner');
-    return `<div class="msg ${cls}">${escapeHtml(m.body)}${renderAttachmentsHtml(parseAttachments(m.attachments))}</div>`;
+    if (m.sender === 'partner') seenPartner = true;
+    const bubble = `<div class="msg ${cls}">${escapeHtml(m.body)}${renderAttachmentsHtml(parseAttachments(m.attachments))}</div>`;
+    if (m.sender !== 'kogul') return bubble;
+    return bubble + `<div class="msg-flag-row"><button type="button" class="link-btn" data-flag="${m.id}" data-opening="${seenPartner ? 0 : 1}">Flag this reply</button></div>
+      <div class="flag-form" id="flagForm-${m.id}" hidden></div>`;
   }).join('');
   if (simPendingJob) {
     const pending = document.createElement('div');
@@ -1617,6 +1980,7 @@ function simStatusText(seconds) {
 
 async function sendSimMessage(forcedText) {
   if (!currentSimId || simPendingJob) return;
+  const simId = currentSimId;  // the user may switch scenarios while this reply is generating
   const input = $('#simMsgInput');
   // forcedText (string) lets openSimulation's auto-open trigger the opening
   // message with an explicit empty string without touching whatever the
@@ -1626,21 +1990,26 @@ async function sendSimMessage(forcedText) {
   if (forcedText === undefined) { input.value = ''; simAttach.clear(); }
 
   const start = files.length
-    ? await jpostFiles(`/api/simulations/${currentSimId}/send`, {text}, files)
-    : await jpost(`/api/simulations/${currentSimId}/send`, {text});
-  if (!start.ok) { alert('Error: ' + start.error); return; }
+    ? await jpostFiles(`/api/simulations/${simId}/send`, {text}, files)
+    : await jpost(`/api/simulations/${simId}/send`, {text});
+  if (!start.ok) {
+    showToast('Error: ' + start.error, 'error');
+    if (text && forcedText === undefined) input.value = text;
+    return;
+  }
   simPendingJob = start.job_id;
   _simPendingSeconds = 0;
-  const d = await jget(`/api/simulations/${currentSimId}/messages`);
-  renderSimMessages(d.messages || []);
+  const d = await jget(`/api/simulations/${simId}/messages`);
+  if (currentSimId === simId) renderSimMessages(d.messages || []);
 
   const result = await pollJob(`/api/simulations/poll/${start.job_id}`, (secs) => {
     _simPendingSeconds = secs;
     const el = $('#simPendingIndicator');
-    if (el) el.textContent = simStatusText(secs);
+    if (el && currentSimId === simId) el.textContent = simStatusText(secs);
   });
-  simPendingJob = null;
-  const d2 = await jget(`/api/simulations/${currentSimId}/messages`);
+  if (simPendingJob === start.job_id) simPendingJob = null;
+  if (currentSimId !== simId) { loadSimulationList(); return; }  // user moved on; the list still updates
+  const d2 = await jget(`/api/simulations/${simId}/messages`);
   renderSimMessages(d2.messages || []);
   // 2026-10-05: status (new/contacted/agreed/not_agreed/unresponsive) and
   // needs_handover change server-side on every reply — refresh both the
@@ -1667,6 +2036,40 @@ async function sendSimMessage(forcedText) {
 
 // ----------------------------------------------------------------- Partner Chats
 let currentPartnerId = null;
+let partnerChatMessages = [];
+
+function renderPartnerMessages(messages) {
+  const msgsBox = $('#chatMsgsBox');
+  if (!msgsBox) return;
+  const atBottom = msgsBox.scrollHeight - msgsBox.scrollTop - msgsBox.clientHeight < 40;
+  msgsBox.innerHTML = (messages || []).map(m =>
+    `<div class="msg ${escapeHtml(m.sender)}">${escapeHtml(m.body)}${sendStatusLabel(m)}${renderAttachmentsHtml(parseAttachments(m.attachments))}</div>`
+  ).join('');
+  if (atBottom || !msgsBox.dataset.rendered) msgsBox.scrollTop = msgsBox.scrollHeight;
+  msgsBox.dataset.rendered = '1';
+}
+
+// Real webhook replies arrive without anyone clicking: while Partner Chats is
+// on screen, refresh the open conversation and the list every 8s. Only the
+// message list is redrawn, so a half-typed message is never lost.
+async function refreshPartnerChatsLive() {
+  if (document.hidden || !$('#tab-partnerchats').classList.contains('active')) return;
+  if (currentPartnerId) {
+    const d = await jget('/api/partners/' + currentPartnerId + '/messages');
+    if (d.ok) {
+      const sig = list => (list || []).map(x => x.id + ':' + (x.send_status || '')).join(',');
+      if (sig(d.messages) !== sig(partnerChatMessages)) {
+        partnerChatMessages = d.messages || [];
+        renderPartnerMessages(partnerChatMessages);
+      }
+    }
+  }
+  const active = document.activeElement;
+  if (!(active && active.closest && active.closest('#partnerChatList'))) {
+    try { await loadPartnerList(); } catch (e) { console.error(e); }
+  }
+}
+setInterval(refreshPartnerChatsLive, 8000);
 // 2026-10-13, user: "a pipeline interface... from there i will be able to
 // view partner all details" — set by a Dashboard stage-card click (see
 // loadDashboard) just before switching tabs; picked up here once, then
@@ -1709,12 +2112,17 @@ async function loadPartnerList() {
     return;
   }
   list.innerHTML = d.partners.map(p => `
-    <div class="item ${p.id === currentPartnerId ? 'active' : ''}" data-id="${p.id}">
-      <div class="nm">${escapeHtml(p.name)} ${p.needs_handover ? '🚩' : ''}</div>
-      <div class="meta">${escapeHtml(p.concept)} · <span class="badge ${p.status}">${p.status.replace('_',' ')}</span></div>
+    <div class="item ${p.id === currentPartnerId ? 'active' : ''}" data-id="${p.id}" role="button" tabindex="0">
+      <div class="nm">${escapeHtml(p.name)} ${p.needs_handover ? '<span title="Needs human intervention">🚩</span>' : ''}</div>
+      <div class="meta">${escapeHtml(p.concept)} · <span class="badge ${escapeHtml(p.status)}">${escapeHtml(String(p.status || '').replace('_',' '))}</span></div>
     </div>
   `).join('');
-  $$('.item', list).forEach(el => el.addEventListener('click', () => openPartnerChat(parseInt(el.dataset.id))));
+  $$('.item', list).forEach(el => {
+    el.addEventListener('click', () => openPartnerChat(parseInt(el.dataset.id)));
+    el.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPartnerChat(parseInt(el.dataset.id)); }
+    });
+  });
 }
 $('#partnerFilter').addEventListener('change', loadPartnerList);
 $('#btnClearPartnerDateRange').addEventListener('click', () => {
@@ -1726,7 +2134,7 @@ async function openPartnerChat(id) {
   currentPartnerId = id;
   loadPartnerList();
   const d = await jget('/api/partners/' + id + '/messages');
-  if (!d.ok) return;
+  if (!d.ok) { showToast('Could not open chat: ' + (d.error || 'unknown error'), 'error'); return; }
   const p = d.partner;
   const pane = $('#partnerChatPane');
   pane.innerHTML = `
@@ -1735,29 +2143,42 @@ async function openPartnerChat(id) {
         <strong>${escapeHtml(p.name)}</strong>
         <span class="muted"> — ${escapeHtml(p.concept)} (${escapeHtml(p.department)})</span><br>
         <span class="muted">${p.source === 'brand_discovery'
-          ? (p.url ? `<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener">${escapeHtml(p.url)}</a>` : 'no website on file')
+          ? (p.url ? `<a href="${safeUrl(p.url)}" target="_blank" rel="noopener">${escapeHtml(p.url)}</a>` : 'no website on file')
           : `${escapeHtml(p.phone || 'no phone')} ${p.is_landline ? '(landline)' : ''}`}</span>
       </div>
       <div class="toolbar">
+        <button class="btn" data-report="${p.weekly_category_id}" style="padding:6px 14px;font-size:12px">📋 Partner report</button>
         <button class="btn secondary" id="btnAnalyzeConversation" style="padding:6px 14px;font-size:12px">AI analysis</button>
         <button class="btn secondary" id="btnExportPartnerChat" style="padding:6px 14px;font-size:12px">Export conversation</button>
-        <label class="muted">Human takeover</label>
-        <div class="toggle ${p.human_takeover ? 'on' : ''}" id="takeoverToggle"><div class="dot"></div></div>
       </div>
     </div>
-    ${p.needs_handover ? '<div class="card" style="background:var(--amber-tonal);color:var(--text)">🚩 PC Agent requested human handover on this chat. Reply directly or resolve below.</div>' : ''}
+    ${(() => {
+      // 2026-10-14, user: "this should be clear if its ai replying or human has taken over"
+      const closed = {agreed: 'Agreed: the Partner Central team owns this chat' + (p.call_slot ? ` (call booked: ${p.call_slot}${p.call_contact_name ? ', ' + p.call_contact_name : ''})` : ''),
+                      not_agreed: 'Closed as not agreed', unresponsive: 'Closed as unresponsive', removed: 'Removed'}[p.status];
+      const [cls, icon, title, sub, btn] = closed
+        ? ['closed', '⏹', 'PC Agent has stopped', closed + '. PC Agent no longer replies here.', 'Take over (reply yourself)']
+        : p.human_takeover
+          ? ['human', '👤', 'Human takeover: a person is replying', 'PC Agent is paused and won\'t reply to this partner until you hand it back.', 'Hand back to PC Agent']
+          : p.needs_handover
+            ? ['waiting', '🚩', 'Waiting for a human', 'PC Agent handed this chat over and is paused. Reply below (that takes over), or hand it back.', 'Hand back to PC Agent']
+            : ['ai', '🤖', 'PC Agent is replying automatically', 'Every partner message gets an AI reply. Take over to reply yourself.', 'Take over (pause PC Agent)'];
+      return `<div class="reply-mode ${cls}"><span class="rm-icon">${icon}</span>
+        <div class="rm-text"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(sub)}</span></div>
+        <button type="button" class="btn ${cls === 'ai' || cls === 'closed' ? 'secondary' : ''}" id="takeoverToggle">${btn}</button></div>`;
+    })()}
     <div id="conversationAnalysisBox" hidden></div>
     <div class="chat-msgs" id="chatMsgsBox" style="display:flex; flex-direction:column;"></div>
     <div class="chat-attach-wrap">
       <div class="chat-pending-files" id="partnerPendingFiles"></div>
       <div class="chat-input">
-        <select id="simInboundSelect" style="max-width:180px">
-          <option value="">Simulate...</option>
-          <option value="inbound">Partner replied (paste text)</option>
-        </select>
+        ${window.KOGUL_LIVE ? '' : `<select id="simInboundSelect" style="max-width:210px" aria-label="Who is this message from">
+          <option value="">Send as Kapruka team → partner</option>
+          <option value="inbound">Log a partner reply (paste text)</option>
+        </select>`}
         <button type="button" class="btn-attach" id="partnerAttachBtn" title="Attach a file">${ATTACH_ICON}</button>
         <input type="file" id="partnerFileInput" multiple accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.csv,.docx,.xlsx" style="display:none">
-        <input type="text" id="chatMsgInput" placeholder="Type a message...">
+        <input type="text" id="chatMsgInput" placeholder="Type a message..." aria-label="Message">
         <button class="btn" id="chatMsgSend">Send</button>
       </div>
     </div>
@@ -1768,16 +2189,28 @@ async function openPartnerChat(id) {
       ${p.status === 'new' ? '<button class="btn" id="btnStartOutreach">Start outreach (PC Agent opens)</button>' : ''}
     </div>
   `;
-  const msgsBox = $('#chatMsgsBox');
-  msgsBox.innerHTML = d.messages.map(m => `<div class="msg ${m.sender}">${escapeHtml(m.body)}${m.simulated ? ' <span class="muted">(simulated — not sent)</span>' : ''}${renderAttachmentsHtml(parseAttachments(m.attachments))}</div>`).join('');
-  msgsBox.scrollTop = msgsBox.scrollHeight;
+  partnerChatMessages = d.messages || [];
+  renderPartnerMessages(partnerChatMessages);
+  // 2026-10-14, user: "log a partner reply" only in simulation; in live mode real
+  // replies arrive through the WhatsApp webhook, so the selector is not rendered.
+  const modeSel = $('#simInboundSelect');  // null when live
+  const modeValue = () => (modeSel ? modeSel.value : '');
+  const sendBtn = $('#chatMsgSend');
+  const syncMode = () => {
+    const inbound = modeValue() === 'inbound';
+    sendBtn.textContent = inbound ? 'Log reply' : (window.KOGUL_LIVE ? 'Send to partner' : 'Send (simulated)');
+    sendBtn.classList.toggle('secondary', inbound);
+    $('#chatMsgInput').placeholder = inbound ? 'Paste exactly what the partner wrote...' : 'Message to the partner...';
+  };
+  if (modeSel) modeSel.addEventListener('change', syncMode);
+  syncMode();
   const partnerAttach = setupAttachPicker('partnerAttachBtn', 'partnerFileInput', 'partnerPendingFiles');
 
   // 2026-10-13, user: "partner chat export option also" — same plain-text
   // transcript export Simulate as Partner has, for a real partner chat.
   $('#btnExportPartnerChat').addEventListener('click', () => {
     const who = {kogul: 'PC Agent', partner: p.name, human: 'Kapruka (human)', system: 'SYSTEM'};
-    const lines = (d.messages || []).map(m => {
+    const lines = (partnerChatMessages || []).map(m => {
       const label = who[m.sender] || m.sender;
       const ts = m.created_at ? ` [${m.created_at}]` : '';
       return `${label}${ts}: ${m.body}`;
@@ -1792,10 +2225,17 @@ async function openPartnerChat(id) {
     URL.revokeObjectURL(url);
   });
 
-  $('#takeoverToggle').addEventListener('click', async () => {
-    const now = !p.human_takeover;
-    await jpost(`/api/partners/${id}/takeover`, {on: now});
+  const toggleTakeover = async () => {
+    // "Hand back" is shown for a waiting (needs_handover) chat too: takeover OFF clears needs_handover
+    const now = p.needs_handover && !p.human_takeover ? false : !p.human_takeover;
+    if (!now && !confirm('Hand this chat back to PC Agent? It will start auto-replying to the partner again.')) return;
+    const r = await jpost(`/api/partners/${id}/takeover`, {on: now});
+    if (!r.ok) showToast('Could not change takeover: ' + (r.error || 'unknown error'), 'error');
     openPartnerChat(id);
+  };
+  $('#takeoverToggle').addEventListener('click', toggleTakeover);
+  $('#takeoverToggle').addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleTakeover(); }
   });
 
   // 2026-10-13, user: "an ai analysis of the conversation on all partners"
@@ -1831,40 +2271,64 @@ async function openPartnerChat(id) {
   });
 
   $('#chatMsgSend').addEventListener('click', async () => {
-    const mode = $('#simInboundSelect').value;
+    const mode = modeValue();
     const text = $('#chatMsgInput').value.trim();
     const files = partnerAttach.takeFiles();
     if (!text && !files.length) return;
+    if (mode !== 'inbound' && window.KOGUL_LIVE &&
+        !confirm(`Send this to ${p.name} on WhatsApp now? PC Agent will stay quiet on this chat afterwards (human takeover).`)) return;
+    sendBtn.disabled = true;
+    const url = mode === 'inbound' ? `/api/partners/${id}/reply_from_partner` : `/api/partners/${id}/human_message`;
+    const r = files.length ? await jpostFiles(url, {text}, files) : await jpost(url, {text});
+    sendBtn.disabled = false;
+    if (!r.ok) {
+      // text and files stay in the box so nothing typed is lost
+      showToast((mode === 'inbound' ? 'Could not log the reply: ' : 'Message NOT delivered: ') + (r.error || 'unknown error'), 'error');
+      return;
+    }
     $('#chatMsgInput').value = '';
     partnerAttach.clear();
-    const url = mode === 'inbound' ? `/api/partners/${id}/reply_from_partner` : `/api/partners/${id}/human_message`;
-    if (files.length) {
-      await jpostFiles(url, {text}, files);
-    } else {
-      await jpost(url, {text});
+    if (mode !== 'inbound') {
+      showToast(r.sent ? 'Sent to the partner on WhatsApp. Human takeover is now on.'
+                       : 'Logged (simulation mode — not sent). Human takeover is now on.');
+    } else if (r.blocked) {
+      showToast('Reply logged. PC Agent did not answer: ' + r.reason, 'warn');
+    } else if (r.held) {
+      showToast('Reply logged. PC Agent produced an unreadable answer — held for a human.', 'warn');
+    } else if (r.send_error) {
+      showToast("PC Agent's reply was NOT delivered: " + r.send_error, 'error');
     }
     openPartnerChat(id);
   });
 
   const btnStart = $('#btnStartOutreach');
   if (btnStart) btnStart.addEventListener('click', async () => {
+    if (window.KOGUL_LIVE && !confirm(`Send PC Agent's opening message to ${p.name} on WhatsApp now?`)) return;
     btnStart.disabled = true; btnStart.textContent = 'Sending...';
-    await jpost(`/api/partners/${id}/start_outreach`, {});
+    const r = await jpost(`/api/partners/${id}/start_outreach`, {});
+    if (!r.ok) showToast('Opening failed: ' + (r.error || 'unknown error'), 'error');
+    else if (r.blocked) showToast('Not sent: ' + r.reason, 'warn');
+    else if (r.send_error) showToast('Opening NOT delivered: ' + r.send_error, 'error');
     openPartnerChat(id);
   });
 
   $('#btnMarkAgreed').addEventListener('click', async () => {
-    await jpost(`/api/partners/${id}/set_status`, {status: 'agreed'});
+    if (!confirm(`Mark ${p.name} as AGREED?\n\nThis emails and WhatsApps the Partner Central team with the full conversation, and PC Agent stops replying.`)) return;
+    const r = await jpost(`/api/partners/${id}/set_status`, {status: 'agreed'});
+    showToast(r.ok ? 'Marked agreed — Partner Central team notified.' : 'Failed: ' + (r.error || 'unknown error'), r.ok ? '' : 'error');
     openPartnerChat(id); loadPartnerList();
   });
   $('#btnMarkUnresponsive').addEventListener('click', async () => {
-    await jpost(`/api/partners/${id}/set_status`, {status: 'unresponsive'});
+    if (!confirm(`Mark ${p.name} as unresponsive?`)) return;
+    const r = await jpost(`/api/partners/${id}/set_status`, {status: 'unresponsive'});
+    if (!r.ok) showToast('Failed: ' + (r.error || 'unknown error'), 'error');
     openPartnerChat(id); loadPartnerList();
   });
   $('#btnMarkNotAgreed').addEventListener('click', async () => {
-    const reason = prompt('Reason the partner did not agree (required):');
+    const reason = (prompt('Reason the partner did not agree (required):') || '').trim();
     if (!reason) return;
-    await jpost(`/api/partners/${id}/set_status`, {status: 'not_agreed', reason});
+    const r = await jpost(`/api/partners/${id}/set_status`, {status: 'not_agreed', reason});
+    if (!r.ok) showToast('Failed: ' + (r.error || 'unknown error'), 'error');
     openPartnerChat(id); loadPartnerList();
   });
 }
@@ -1872,11 +2336,22 @@ async function openPartnerChat(id) {
 // ----------------------------------------------------------------- Settings
 async function loadSettings() {
   const d = await jget('/api/settings');
+  if (!d.ok) throw new Error(d.error || 'settings failed to load');
   $('#setNumCategories').value = d.settings.num_categories_per_week;
   $('#setPartnersPerCat').value = d.settings.partners_per_category;
-  $('#setFollowUpDays').value = d.settings.follow_up_days;
+  ensureSelectOption($('#setModel'), d.settings.claude_model);
   $('#setModel').value = d.settings.claude_model;
+  applyLiveMode(d.effective);
+  renderSettingsReadiness(d.effective || {});
+  $('#setWhatsappLive').checked = d.settings.whatsapp_live === '1';
+  $('#setWhatsappLiveLabel').textContent = d.settings.whatsapp_live === '1' ? 'On — live' : 'Off — simulation';
+  $('#setWaTemplate').value = d.settings.wa_outreach_template || '';
+  $('#setWaTemplateLang').value = d.settings.wa_outreach_template_lang || 'en_US';
+  $('#setWaAlertTemplate').value = d.settings.wa_alert_template || '';
+  $('#setWaAlertTemplateLang').value = d.settings.wa_alert_template_lang || 'en_US';
   $('#setOpeningTemplate').value = d.settings.opening_message_template || '';
+  try { $('#setBriefQuestions').value = JSON.parse(d.settings.brief_questions || '[]').join('\n'); }
+  catch (e) { $('#setBriefQuestions').value = ''; }
   $('#kogulMdEditor').value = d.kogul_md;
 
   // 2026-10-14, user: "Partner Central team email and number to fill...
@@ -1889,7 +2364,7 @@ async function loadSettings() {
   $$('.pc-team-phone').forEach((el, i) => el.value = pcPhones[i] || '');
 
   const usage = await jget('/api/settings/token_usage');
-  $('#tokenUsageBox').innerHTML = `${usage.calls} Claude CLI calls · ~${usage.approx_input_tokens.toLocaleString()} input tokens · ~${usage.approx_output_tokens.toLocaleString()} output tokens (estimated, 4 chars/token)`;
+  $('#tokenUsageBox').innerHTML = `${fmtNum(usage.calls)} AI calls (PC Agent chat, replies, simulations) · ~${fmtNum(usage.approx_input_tokens)} input tokens · ~${fmtNum(usage.approx_output_tokens)} output tokens (estimated, 4 chars/token)`;
 
   loadShareables();
 }
@@ -1953,7 +2428,7 @@ function costStatTile(label, value, cls) {
 
 async function loadCosts() {
   const d = await jget('/api/costs');
-  if (!d.ok) return;
+  if (!d.ok) throw new Error(d.error || 'costs failed to load');
   $('#costsTotalLabel').textContent = `Grand total: $${d.grand_total_usd.toFixed(4)}`;
   $('#costsStatGrid').innerHTML = [
     costStatTile('OpenAI cost (Kogul)', '$' + d.openai.total_cost_usd.toFixed(4)),
@@ -2059,7 +2534,7 @@ function renderTopReasons(listEl, topReasons) {
 
 async function loadRejections() {
   const d = await jget('/api/rejections');
-  if (!d.ok) return;
+  if (!d.ok) throw new Error(d.error || 'rejections failed to load');
   renderTopReasons($('#rejectReasonsTopList'), d.top_pc_reject_reasons);
   renderTopReasons($('#rejectReasonsPartnerTopList'), d.top_partner_reject_reasons);
   renderRejectionList($('#pcRejectedList'), d.pc_rejected, 'reject_reason', 'reviewed_at');
@@ -2072,7 +2547,7 @@ const MI_REVIEW_BADGE = {approved: 'agreed', rejected: 'not_agreed', pending_rev
 
 async function loadMissingItems() {
   const d = await jget('/api/missing_items');
-  if (!d.ok) return;
+  if (!d.ok) throw new Error(d.error || 'opportunities failed to load');
   $('#missingItemsSubLabel').textContent = `${d.items.length} item(s)`;
 
   const box = $('#missingItemsList');
@@ -2095,17 +2570,17 @@ async function loadMissingItems() {
         <span class="brand-headline" style="font-size:17px">${escapeHtml(it.missing_item)}</span>
         ${it.example ? `<span class="brand-sub">Example: ${escapeHtml(it.example)}</span>` : ''}
         ${it.summary ? `<div class="brand-section"><span class="lbl">Why this was flagged</span><div class="val">${escapeHtml(it.summary)}</div></div>` : ''}
-        ${it.url ? `<div class="brand-sub"><a class="link" href="${escapeHtml(it.url)}" target="_blank" rel="noopener">View on site ↗</a></div>` : ''}
+        ${it.url ? `<div class="brand-sub"><a class="link" href="${safeUrl(it.url)}" target="_blank" rel="noopener">View on site ↗</a></div>` : ''}
 
-        ${it.websites.length ? `
+        ${(it.websites || []).length ? `
           <div class="brand-section">
-            <span class="lbl">Websites found (${it.websites.length})</span>
+            <span class="lbl">Websites found (${(it.websites || []).length})</span>
             <div class="val">
               ${it.websites.map(w => `
                 <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--outline)">
                   <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                     <span class="badge ${MI_REVIEW_BADGE[w.review_status] || 'tag'}">${escapeHtml((w.review_status||'').replace('_',' '))}</span>
-                    <a class="link" href="${escapeHtml(w.business_url||'#')}" target="_blank" rel="noopener">${escapeHtml(w.concept)}</a>
+                    <a class="link" href="${safeUrl(w.business_url)}" target="_blank" rel="noopener">${escapeHtml(w.concept)}</a>
                     <span class="muted">${escapeHtml(w.department||'')}</span>
                   </div>
                   ${w.demand_evidence && w.demand_evidence.length ? `<div style="margin-top:6px">${renderDemandEvidence(w.demand_evidence)}</div>` : ''}
@@ -2136,10 +2611,25 @@ async function loadMissingItems() {
   });
 }
 
+// Per-item result text, re-applied after every list re-render so a
+// finished action's message doesn't vanish the moment the list refreshes.
+const _miStatus = {};
+function setMiStatus(itemId, text) {
+  _miStatus[itemId] = text;
+  const el = $('#mi-status-' + itemId);
+  if (el) el.textContent = text;
+}
+function restoreMiStatus() {
+  for (const [id, text] of Object.entries(_miStatus)) {
+    const el = $('#mi-status-' + id);
+    if (el) el.textContent = text;
+  }
+}
+
 async function findPartnerForMissingItem(itemId, btn) {
   btn.disabled = true;
   btn.textContent = 'Searching…';
-  const statusEl = $('#mi-status-' + itemId);
+  const statusEl = {set textContent(t) { setMiStatus(itemId, t); }};
   const start = await jpost(`/api/missing_items/${encodeURIComponent(itemId)}/find_partner`, {});
   if (!start.ok) {
     statusEl.textContent = 'Error: ' + (start.error || 'failed to start');
@@ -2158,19 +2648,21 @@ async function findPartnerForMissingItem(itemId, btn) {
   }
   btn.disabled = false;
   btn.textContent = 'Find partner now';
-  loadMissingItems();
+  await safeLoad('missingitems', loadMissingItems);
+  restoreMiStatus();
 }
 
 async function removeMissingItem(itemId) {
   if (!confirm('Remove this opportunity? This does not affect any businesses already found for it.')) return;
-  await fetch(`/api/missing_items/${encodeURIComponent(itemId)}`, {method: 'DELETE'});
-  loadMissingItems();
+  const r = await jdelete(`/api/missing_items/${encodeURIComponent(itemId)}`);
+  if (!r.ok) showToast('Remove failed: ' + (r.error || 'unknown error'), 'error');
+  safeLoad('missingitems', loadMissingItems);
 }
 
 async function refreshAdsForMissingItem(itemId, btn) {
   btn.disabled = true;
   btn.textContent = 'Checking…';
-  const statusEl = $('#mi-status-' + itemId);
+  const statusEl = {set textContent(t) { setMiStatus(itemId, t); }};
   const start = await jpost('/api/missing_items/refresh_ads', {item_ids: [itemId]});
   if (!start.ok) {
     statusEl.textContent = 'Error: ' + (start.error || 'failed to start');
@@ -2183,7 +2675,8 @@ async function refreshAdsForMissingItem(itemId, btn) {
   statusEl.textContent = result.status === 'done' ? 'Ads demand updated.' : ('Error: ' + (result.error || 'check failed'));
   btn.disabled = false;
   btn.textContent = 'Check Ads demand';
-  loadMissingItems();
+  await safeLoad('missingitems', loadMissingItems);
+  restoreMiStatus();
 }
 
 $('#btnShowAddMissingItem').addEventListener('click', () => {
@@ -2259,11 +2752,68 @@ $('#btnSaveSettings').addEventListener('click', async () => {
   const r = await jpost('/api/settings/update', {
     num_categories_per_week: $('#setNumCategories').value,
     partners_per_category: $('#setPartnersPerCat').value,
-    follow_up_days: $('#setFollowUpDays').value,
     claude_model: $('#setModel').value,
   });
   $('#settingsSaveStatus').textContent = r.ok ? 'Saved.' : ('Error: ' + r.error);
   setTimeout(() => $('#settingsSaveStatus').textContent = '', 3000);
+});
+
+$('#setWhatsappLive').addEventListener('change', e => {
+  $('#setWhatsappLiveLabel').textContent = e.target.checked ? 'On — live (save to apply)' : 'Off — simulation (save to apply)';
+});
+$('#btnSaveWhatsapp').addEventListener('click', async () => {
+  const live = $('#setWhatsappLive').checked;
+  if (live && !window.KOGUL_LIVE && !confirm('Turn on LIVE WhatsApp sending?\n\nFrom now on, openings, PC Agent replies, nudges and your Partner Chats messages are really sent to real businesses.')) return;
+  const r = await jpost('/api/settings/update', {
+    whatsapp_live: live ? '1' : '0',
+    wa_outreach_template: $('#setWaTemplate').value.trim(),
+    wa_outreach_template_lang: $('#setWaTemplateLang').value.trim() || 'en_US',
+    wa_alert_template: $('#setWaAlertTemplate').value.trim(),
+    wa_alert_template_lang: $('#setWaAlertTemplateLang').value.trim() || 'en_US',
+  });
+  $('#waSaveStatus').textContent = r.ok ? 'Saved.' : ('Error: ' + r.error);
+  setTimeout(() => $('#waSaveStatus').textContent = '', 3000);
+  if (r.ok) loadSettings();
+});
+
+// A saved model that isn't in the hardcoded list would otherwise render blank
+// and get silently overwritten by the first option on the next save.
+function ensureSelectOption(sel, value) {
+  if (!sel || !value || [...sel.options].some(o => o.value === value)) return;
+  const o = document.createElement('option');
+  o.value = value; o.textContent = value;
+  sel.appendChild(o);
+}
+
+function renderSettingsReadiness(eff) {
+  const emails = (eff.emails || []).map(escapeHtml).join(', ') || 'nobody';
+  const phones = (eff.phones || []).map(escapeHtml).join(', ');
+  $('#alertRecipientsNote').innerHTML =
+    `<strong>Alerts currently go to:</strong> ${emails}` +
+    (eff.emails_are_fallback ? ' <span class="warn-text">(built-in fallback — no team emails saved yet)</span>' : '') +
+    `<br><strong>WhatsApp alerts:</strong> ${phones || '<span class="warn-text">none — add a number below or nobody gets WhatsApp alerts</span>'}`;
+  const row = (ok, text) => `<div>${ok ? '✓' : '<span class="warn-text">✗</span>'} ${text}</div>`;
+  $('#waReadiness').innerHTML =
+    row(eff.whatsapp_live, eff.whatsapp_live ? 'Live sending is ON' : 'Live sending is OFF (simulation)') +
+    row(eff.webhook_verify_token_set, 'Webhook verify token set (WA_WEBHOOK_VERIFY_TOKEN)') +
+    row(eff.webhook_signature_ready, 'Webhook signature secret set (META_APP_SECRET) — inbound messages are refused until it is') +
+    row(eff.remote_login_set, 'Remote login password set (KOGUL_ADMIN_PASSWORD) — needed to open this app from another machine');
+}
+
+// Header banner + labels: whether anything leaves the building right now.
+function applyLiveMode(eff) {
+  window.KOGUL_LIVE = !!(eff && eff.whatsapp_live);
+  const b = $('#modeBanner');
+  if (!b) return;
+  b.textContent = window.KOGUL_LIVE ? 'WhatsApp LIVE — messages are really sent' : 'Simulation mode — nothing is sent to partners';
+  b.className = 'mode-banner ' + (window.KOGUL_LIVE ? 'live' : 'sim');
+}
+
+$('#btnSaveBriefQuestions').addEventListener('click', async () => {
+  const lines = $('#setBriefQuestions').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const r = await jpost('/api/settings/update', {brief_questions: lines});
+  $('#briefQuestionsSaveStatus').textContent = r.ok ? 'Saved — PC Agent uses them from the next message.' : ('Error: ' + r.error);
+  setTimeout(() => $('#briefQuestionsSaveStatus').textContent = '', 4000);
 });
 
 $('#btnSaveOpeningTemplate').addEventListener('click', async () => {
@@ -2296,12 +2846,18 @@ function renderContactTestResults(results) {
     ...Object.entries(results.phones || {}).map(([addr, r]) => ({addr, kind: 'WhatsApp', ...r})),
   ];
   if (!rows.length) { box.innerHTML = ''; return; }
+  // 2026-10-14: "sent" used to show for WhatsApp plain text that Meta accepted
+  // but never delivered (outside the 24h window) — now shown as a warning.
+  const why = r => /timed out/i.test(r.error || '') && r.kind === 'Email'
+    ? "Can't reach Gmail's mail server from this network (outgoing email ports 465/587 are blocked here). Try from the VPS or another network."
+    : String(r.error || '').slice(0, 220);
   box.innerHTML = rows.map(r => `
     <div class="demand-row">
       <span class="demand-kw">${escapeHtml(r.kind)} — ${escapeHtml(r.addr)}</span>
       <span class="demand-figs">
-        <span class="badge ${r.ok ? 'agreed' : 'not_agreed'}">${r.ok ? 'sent' : 'failed'}</span>
-        ${!r.ok && r.error ? `<span class="muted" style="max-width:260px;white-space:normal">${escapeHtml(String(r.error).slice(0,160))}</span>` : ''}
+        <span class="badge ${!r.ok ? 'not_agreed' : (r.note ? 'replied' : 'agreed')}">${!r.ok ? 'failed' : (r.note ? 'accepted, may not arrive' : 'sent')}</span>
+        ${!r.ok && r.error ? `<span class="muted" style="max-width:320px;white-space:normal">${escapeHtml(why(r))}</span>` : ''}
+        ${r.ok && r.note ? `<span class="muted" style="max-width:320px;white-space:normal">${escapeHtml(r.note)}</span>` : ''}
       </span>
     </div>
   `).join('');
@@ -2361,17 +2917,25 @@ $('#btnTestAllContacts').addEventListener('click', async () => {
 
 // initial load — honor a bookmarked/typed #hash URL (e.g. #partnerchats),
 // default to Dashboard (already marked .active in the HTML) if there's none.
+jget('/api/settings').then(d => { if (d.ok) applyLiveMode(d.effective); });
 if (location.hash.length > 1) {
   switchTab(location.hash.slice(1), false);
 } else {
-  loadDashboard();
+  safeLoad('dashboard', loadDashboard);
 }
+window.addEventListener('unhandledrejection', e => {
+  console.error(e.reason);
+  showToast('Something went wrong: ' + (e.reason && e.reason.message ? e.reason.message : e.reason), 'error');
+});
 
 // 2026-10-05: poll the handover count every 30s regardless of which tab is
 // active — loadDashboard() alone only ran when you clicked into the
 // Dashboard tab, which defeats the point of a badge you're meant to notice
 // from anywhere in the app.
-setInterval(() => { jget('/api/dashboard').then(d => updateHandoverBadge(d.handover_count ?? 0)); }, 30000);
+setInterval(() => {
+  if (document.hidden) return;
+  jget('/api/dashboard').then(d => { if (d.ok !== false) updateHandoverBadge(d.handover_count ?? 0); });
+}, 30000);
 
 // 2026-10-05, user: "and it must happen in real time" — the Simulate tab's
 // scenario list and open chat's status badge only updated when YOU sent a
@@ -2392,6 +2956,338 @@ setInterval(() => {
     }
   }
 }, 5000);
+
+// ------------------------------------------------------- Partner report
+// 2026-10-14, user: "i need to have a partner report there for each partner":
+// live pipeline status, about, SKUs, does Kapruka sell it (live search),
+// location / Colombo / consignment, lucrative verdict, per-partner questions
+// (AI-suggested, Approve/Reject, add own), AI analysis of the chat, open chat.
+// Then: "i want the partner report before reaching out" — keyed to the
+// business card (works on pending cards, with Approve / Reject inside).
+// GET /report is DB-only and polled while open; when the chat has new
+// messages the AI/live-search rebuild is kicked off automatically, once.
+// NOTE: built from <div>s — a global `section {display:none}` (the tab
+// switcher) hid an earlier <section>-based version.
+let _reportCid = null, _reportTimer = null, _reportBuilding = false, _reportAutoBuilt = null, _reportData = null;
+
+function _reportOverlay() {
+  let el = $('#reportOverlay');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'reportOverlay';
+    el.className = 'report-overlay';
+    el.hidden = true;
+    el.innerHTML = '<div class="report-sheet" role="dialog" aria-modal="true" aria-label="Partner report"><div id="reportBody"></div></div>';
+    document.body.appendChild(el);
+    el.addEventListener('click', e => { if (e.target === el) closePartnerReport(); });
+    el.addEventListener('click', onReportClick);
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && !el.hidden) closePartnerReport(); });
+  }
+  return el;
+}
+
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-report]');
+  if (b) { e.preventDefault(); openPartnerReport(parseInt(b.dataset.report)); }
+});
+
+async function openPartnerReport(cid) {
+  _reportCid = cid;
+  _reportOverlay().hidden = false;
+  document.body.classList.add('no-scroll');
+  $('#reportBody').innerHTML = '<div class="report-loading"><span class="spinner"></span> Loading partner report…</div>';
+  await refreshPartnerReport();
+  clearInterval(_reportTimer);
+  _reportTimer = setInterval(refreshPartnerReport, 10000);  // live status
+}
+
+function closePartnerReport() {
+  clearInterval(_reportTimer);
+  _reportCid = null;
+  const ov = $('#reportOverlay');
+  if (ov) ov.hidden = true;
+  document.body.classList.remove('no-scroll');
+}
+
+async function refreshPartnerReport() {
+  const cid = _reportCid;
+  if (!cid) return;
+  const d = await jget(`/api/cards/${cid}/report`);
+  if (cid !== _reportCid) return;
+  if (!d.ok) { $('#reportBody').innerHTML = `<div class="report-loading">Could not load: ${escapeHtml(d.error || 'unknown error')}</div>`; return; }
+  const draft = $('#rqNewText') ? $('#rqNewText').value : '';   // keep a half-typed question across refreshes
+  const scroll = $('#reportOverlay').scrollTop;
+  _reportData = d;
+  renderPartnerReport(d);
+  if ($('#rqNewText')) $('#rqNewText').value = draft;
+  $('#reportOverlay').scrollTop = scroll;
+  if (d.building) watchReportBuild(cid, d.build_job);
+  else if (d.stale && !_reportBuilding && _reportAutoBuilt !== `${cid}:${d.msg_count}`) {
+    _reportAutoBuilt = `${cid}:${d.msg_count}`;  // auto-rebuild once per new message, never in a loop
+    buildPartnerReport({});
+  }
+}
+
+async function buildPartnerReport(opts) {
+  const cid = _reportCid;
+  if (!cid || _reportBuilding) return;
+  const r = await jpost(`/api/cards/${cid}/report/build`, opts || {});
+  if (!r.ok) { showToast('Could not update the report: ' + (r.error || 'unknown error'), 'error'); return; }
+  watchReportBuild(cid, r.job_id);
+}
+
+async function watchReportBuild(cid, jobId) {
+  if (_reportBuilding || !jobId) return;
+  _reportBuilding = true;
+  const s = $('#reportBuildState');
+  if (s) s.innerHTML = '<span class="spinner"></span> Updating: reading their website, store and chat, searching Kapruka…';
+  const res = await pollJob(`/api/report_jobs/${jobId}`);
+  _reportBuilding = false;
+  if (cid !== _reportCid) return;
+  if (res.status === 'error') showToast('Report update failed: ' + (res.error || 'unknown error'), 'error');
+  refreshPartnerReport();
+}
+
+const RPT_STATUS = {new: 'Not contacted', contacted: 'Opening sent', replied: 'In conversation', negotiating: 'In conversation',
+                    agreed: 'Agreed', not_agreed: 'Not agreed', unresponsive: 'Unresponsive'};
+const RPT_REVIEW = {pending_review: ['Awaiting your review', 'replied'], approved: ['Approved', 'agreed'], rejected: ['Rejected', 'not_agreed']};
+const RPT_VERDICT_ICON = {lucrative: '★', potential: '◐', low: '○', blocked: '✕', unknown: '…'};
+const RPT_KAP = {none: ['Opportunity', 'gap'], thin: ['Only a few', 'thin'], covered: ['Kapruka has it', 'covered'], failed: ['Search failed', 'failed']};
+const RPT_SRC = {website: 'their website', chat: 'said in chat', google: 'Google, checked same business'};
+const RPT_BV = {high: ['High brand value', 'good'], medium: ['Medium brand value', 'mid'], low: ['Low brand value', 'low'], unknown: ['Brand value unknown', 'low']};
+const RPT_PLATFORM = {instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok', youtube: 'YouTube'};
+
+function _kapLine(k) {
+  if (k.verdict === 'failed') return 'search failed';
+  if (k.verdict === 'none') return k.category_exists ? 'Kapruka has the category, not their kind' : 'not on Kapruka at all';
+  if (k.verdict === 'thin') return `only ${fmtNum(k.count)} of their kind on Kapruka`;
+  return `Kapruka has ${fmtNum(k.count)}${k.full_page ? '+' : ''} of their kind`;
+}
+
+function renderPartnerReport(d) {
+  const p = d.partner, pr = d.profile || {}, v = d.verdict;
+  const kap = d.kapruka || [];
+  const missing = kap.filter(k => k.verdict === 'none'), thin = kap.filter(k => k.verdict === 'thin'),
+        has = kap.filter(k => k.verdict === 'covered');
+  const consignment = pr.in_colombo === 'yes' ? 'Not needed' : ({yes: 'Yes', no: 'No'}[pr.consignment] || 'Not asked yet');
+  const qs = d.partner_questions || [];
+  const suggested = qs.filter(q => q.status === 'suggested'), approved = qs.filter(q => q.status === 'approved'),
+        rejected = qs.filter(q => q.status === 'rejected');
+  const a = pr.analysis;
+  const skuLower = !!(d.sku_source && d.sku_source.includes('at least'));  // website count: a lower bound
+  const skuBelow = d.skus != null && d.skus <= d.min_skus && !skuLower;
+  const skuText = d.skus != null ? `${skuLower ? '≥' : ''}${fmtNum(d.skus)}` : null;
+  const pending = p.review_status === 'pending_review';
+  const chatAnswer = q => ((pr.answers || []).find(x => x.question === q) || {}).answer;
+  const [revLbl, revCls] = RPT_REVIEW[p.review_status] || [p.review_status || '', 'tag'];
+
+  // Partner brief: every item, its value, and where it came from.
+  const brief = [
+    {q: 'What they sell', a: pr.about || p.products_to_bring_in, src: pr.about ? 'website + store' : 'website'},
+    {q: 'How many products (SKUs)', a: skuText ? `${skuText}${skuBelow ? ` (below the minimum of more than ${d.min_skus})` : ''}${skuLower ? ' (exact count to confirm in chat)' : ''}` : null,
+     src: d.sku_source, extra: pr.sku_count_stated != null && d.catalog && d.catalog.count != null && pr.sku_count_stated !== d.catalog.count
+       ? `partner said ${fmtNum(pr.sku_count_stated)}` : null},
+    {q: 'Location', a: pr.location, src: RPT_SRC[pr.location_source], extra: pr.location_source === 'google' && pr.location_matched_by ? `matched by: ${pr.location_matched_by}` : null},
+    {q: 'Within Colombo?', a: {yes: 'Yes, Colombo District', no: 'No, outside Colombo'}[pr.in_colombo] || null, src: RPT_SRC[pr.location_source]},
+    // Not a research item: whether an outside-Colombo business accepts consignment is their call.
+    {q: 'OK with consignment?', a: pr.in_colombo === 'yes' ? 'Not needed (in Colombo)'
+       : ({yes: 'Yes', no: 'No'}[pr.consignment]
+          || (pr.in_colombo === 'no' ? 'The one question for the chat: PC Agent asks it (their decision, research can\'t know it)' : null)),
+     src: ['yes', 'no'].includes(pr.consignment) && pr.in_colombo !== 'yes' ? 'said in chat' : null},
+    ...approved.map(q => ({q: q.question, a: chatAnswer(q.question), src: chatAnswer(q.question) ? 'said in chat' : null, own: true})),
+  ];
+
+  $('#reportBody').innerHTML = `
+    <div class="rpt-head">
+      ${d.images && d.images.length ? `<img class="rpt-avatar" src="${escapeHtml(d.images[0])}" alt="" referrerpolicy="no-referrer" onerror="this.remove()">` : '<div class="rpt-avatar rpt-avatar-blank">🏷️</div>'}
+      <div class="rpt-title">
+        <div class="rpt-kicker">Partner report · ${escapeHtml(d.department_label)}</div>
+        <h2>${escapeHtml(p.name || p.concept)}</h2>
+        <div class="rpt-links">
+          ${p.url ? `<a class="link" target="_blank" rel="noopener" href="${safeUrl(p.url)}">${escapeHtml(p.url.replace(/^https?:\/\//, '').replace(/\/$/, ''))} ↗</a>` : '<span class="muted">no website on file</span>'}
+          ${p.ecommerce_platform ? `<span class="badge tag">${escapeHtml(p.ecommerce_platform)}</span>` : ''}
+          <span class="badge ${revCls}">${escapeHtml(revLbl)}</span>
+          ${p.status ? `<span class="badge ${p.status}">${escapeHtml(RPT_STATUS[p.status] || p.status)}</span>` : ''}
+          ${p.needs_handover ? '<span class="badge not_agreed">🚩 needs a human</span>' : ''}
+          ${p.human_takeover ? '<span class="badge tag">human takeover on</span>' : ''}
+        </div>
+      </div>
+      <button type="button" class="rpt-close" data-rpt="close" aria-label="Close report">✕</button>
+    </div>
+
+    ${pending ? `<div class="rpt-decide">
+      <div><strong>Not contacted yet.</strong> Review this report, approve the questions you want asked, then decide.</div>
+      <div class="rpt-decide-btns">
+        <button type="button" class="btn" data-rpt="approve" data-is-brand="1" data-name="${escapeHtml(p.concept || '')}">Approve → reach out</button>
+        <button type="button" class="btn secondary" data-rpt="reject">Reject</button>
+      </div></div>` : ''}
+
+    ${v ? `<div class="rpt-verdict lvl-${v.level}">
+      <div class="rpt-verdict-icon">${RPT_VERDICT_ICON[v.level] || '•'}</div>
+      <div><div class="rpt-verdict-label">${escapeHtml(v.label)}</div>
+        <ul>${v.reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul></div>
+    </div>` : ''}
+
+    <ol class="rpt-steps">
+      ${d.pipeline.map(s => `<li class="st-${s.state}"><span class="dot"></span><span class="lbl">${escapeHtml(s.label)}</span>${s.detail ? `<span class="sub">${escapeHtml(s.detail)}</span>` : ''}</li>`).join('')}
+    </ol>
+
+    <div class="rpt-tiles">
+      <div class="rpt-tile ${skuBelow ? 'bad' : (d.skus != null ? 'good' : '')}">
+        <div class="k">Products (SKUs)</div>
+        <div class="v">${skuText || '—'}</div>
+        <div class="s">${d.skus != null ? (skuLower ? 'seen on their website · confirm in chat' : `from ${escapeHtml(d.sku_source)}`) : escapeHtml((d.catalog && d.catalog.note) || 'not known yet')}${skuBelow ? ` · below minimum (more than ${d.min_skus} needed)` : ''}</div>
+      </div>
+      <div class="rpt-tile rpt-tile-wide ${missing.length || thin.length ? 'good' : (has.length ? 'bad' : '')}">
+        <div class="k">Does Kapruka sell this?</div>
+        ${kap.length ? `<ul class="rpt-cov">${kap.map(k => `<li class="cov-${(RPT_KAP[k.verdict] || [])[1] || 'failed'}"><span class="cov-dot"></span><span class="cov-term">${escapeHtml(k.term)}${k.their_products ? ` <small>(${fmtNum(k.their_products)} of theirs)</small>` : ''}</span><span class="cov-val">${_kapLine(k)}</span></li>`).join('')}</ul>
+          <div class="s">${missing.length || thin.length ? `${missing.length + thin.length} of ${kap.length} ranges are an opportunity (Kapruka lacks their kind)` : 'Kapruka already sells their kind of product in every range'}</div>`
+        : '<div class="v sm">—</div><div class="s">not searched yet</div>'}
+      </div>
+      <div class="rpt-tile ${pr.in_colombo === 'yes' ? 'good' : (pr.in_colombo === 'no' && pr.consignment === 'no' ? 'bad' : '')}">
+        <div class="k">Location</div>
+        <div class="v sm">${pr.location ? escapeHtml(pr.location) : '—'}</div>
+        <div class="s">${pr.in_colombo === 'yes' ? 'Within Colombo District' : (pr.in_colombo === 'no' ? `Outside Colombo · consignment: ${escapeHtml(consignment)}` : 'Not confirmed yet')}${RPT_SRC[pr.location_source] ? ` · from ${RPT_SRC[pr.location_source]}` : ''}</div>
+      </div>
+    </div>
+
+    ${d.call ? `<div class="rpt-call">
+      <div class="rpt-call-icon">📞</div>
+      <div><div class="rpt-call-label">Call booked with the Partner Central team</div>
+        <div><strong>${escapeHtml(d.call.slot)}</strong> (Sri Lanka time)${d.call.contact ? ` · ask for <strong>${escapeHtml(d.call.contact)}</strong>` : ''}</div></div>
+    </div>` : ''}
+
+    <div class="rpt-card">
+      <div class="rpt-card-head"><h3>Brand value</h3>
+        ${(() => { const bv = (d.research || {}).brand_value; if (!bv) return ''; const [l, c] = RPT_BV[bv.level] || RPT_BV.unknown; return `<span class="bv-pill ${c}">${l}${bv.partial ? ' (partial)' : ''}</span>`; })()}</div>
+      ${d.research && Object.keys(d.research).length ? (() => {
+        const r = d.research, rows = [];
+        (r.followers || []).slice().sort((a, b) => b.count - a.count).forEach(f => rows.push(
+          `<div class="bv-row"><span class="bv-k">${escapeHtml(RPT_PLATFORM[f.platform] || f.platform)} followers</span><span class="bv-v">${fmtNum(f.count)}</span>${f.url ? `<a class="link" target="_blank" rel="noopener" href="${safeUrl(f.url)}">source ↗</a>` : ''}</div>`));
+        rows.push(`<div class="bv-row"><span class="bv-k">Website traffic</span><span class="bv-v">${r.traffic ? '~' + fmtNum(r.traffic.monthly_visits) + '/month' : '<span class="muted">no public estimate</span>'}</span>${r.traffic && r.traffic.url ? `<a class="link" target="_blank" rel="noopener" href="${safeUrl(r.traffic.url)}">${escapeHtml(r.traffic.source || 'source')} ↗</a>` : ''}</div>`);
+        if (r.google_reviews) rows.push(`<div class="bv-row"><span class="bv-k">Google reviews</span><span class="bv-v">${fmtNum(r.google_reviews.count)} · ${escapeHtml(String(r.google_reviews.rating || ''))}★</span>${r.google_reviews.url ? `<a class="link" target="_blank" rel="noopener" href="${safeUrl(r.google_reviews.url)}">source ↗</a>` : ''}</div>`);
+        if ((r.stockists || []).length) rows.push(`<div class="bv-row"><span class="bv-k">Also sold at</span><span class="bv-v">${r.stockists.map(x => x.url ? `<a target="_blank" rel="noopener" href="${safeUrl(x.url)}">${escapeHtml(x.name)}</a>` : escapeHtml(x.name)).join(', ')}</span></div>`);
+        if ((r.press || []).length) rows.push(`<div class="bv-row"><span class="bv-k">Press</span><span class="bv-v">${r.press.map(x => x.url ? `<a target="_blank" rel="noopener" href="${safeUrl(x.url)}">${escapeHtml(x.title)}</a>` : escapeHtml(x.title)).join(' · ')}</span></div>`);
+        (r.unchecked_profiles || []).forEach(u => rows.unshift(
+          `<div class="bv-row"><span class="bv-k">${escapeHtml(RPT_PLATFORM[u.platform] || u.platform)} followers</span><span class="bv-v"><span class="muted">couldn't be read automatically</span></span><a class="link" target="_blank" rel="noopener" href="${safeUrl(u.url)}">open profile ↗</a></div>`));
+        if (!(r.followers || []).length && !(r.unchecked_profiles || []).length) rows.unshift('<div class="bv-row"><span class="bv-k">Social followers</span><span class="bv-v"><span class="muted">not found in search</span></span></div>');
+        return rows.join('') + '<p class="muted rpt-small" style="margin-top:8px">From a web search; each figure links to where it was seen.</p>';
+      })() : `<p class="muted">${d.building || d.queued ? 'Searching the web…' : 'Not researched yet. Use Refresh report.'}</p>`}
+    </div>
+
+    <div class="rpt-card">
+      <h3>Partner brief</h3>
+      <dl class="rpt-answers">${brief.map(x => `
+        <dt>${escapeHtml(x.q)}${x.own ? ' <span class="badge tag">your question</span>' : ''}</dt>
+        <dd class="${x.a ? '' : 'muted'}">${x.a ? escapeHtml(x.a) : 'Not known yet'}${x.extra ? ` <span class="rpt-src">${escapeHtml(x.extra)}</span>` : ''}${x.a && x.src ? ` <span class="rpt-src">${escapeHtml(x.src)}</span>` : ''}</dd>`).join('')}
+      </dl>
+    </div>
+
+    <div class="rpt-grid">
+      <div class="rpt-card">
+        <h3>Why we picked them</h3>
+        <p>${p.worth_pursuing_reason ? escapeHtml(p.worth_pursuing_reason) : '<span class="muted">—</span>'}</p>
+        ${p.products_to_bring_in ? `<p class="muted rpt-small">Found on their website: ${escapeHtml(p.products_to_bring_in)}</p>` : ''}
+      </div>
+      <div class="rpt-card">
+        <h3>Conversation</h3>
+        ${a ? `
+          <div class="rpt-interest i-${escapeHtml(a.interest_level || 'unclear')}">${escapeHtml(a.interest_level || 'unclear')} interest</div>
+          <p>${escapeHtml(a.summary || '')}</p>
+          ${a.interest_reason ? `<p class="muted rpt-small">${escapeHtml(a.interest_reason)}</p>` : ''}
+          ${a.next_step ? `<div class="rpt-next"><span>Next step</span>${escapeHtml(a.next_step)}</div>` : ''}
+        ` : `<p class="muted">${p.partner_id ? (d.msg_count ? 'No partner reply yet, nothing to analyse.' : 'No messages yet.') : 'No chat yet: PC Agent reaches out once you approve.'}</p>`}
+        ${!d.call && (d.next_slots || []).length ? `<div class="rpt-slots"><span>Call times PC Agent offers right now</span>${d.next_slots.map(x => `<em>${escapeHtml(x)}</em>`).join('')}</div>` : ''}
+        ${p.partner_id ? `<button type="button" class="btn secondary" data-rpt="chat">Open chat (${d.msg_count} message${d.msg_count === 1 ? '' : 's'}) →</button>` : ''}
+      </div>
+    </div>
+
+    <div class="rpt-card">
+      <div class="rpt-card-head"><h3>Kapruka search details</h3>
+        <button type="button" class="link-btn" data-rpt="rekapruka">Search Kapruka again</button></div>
+      <p class="muted rpt-small">Live search on kapruka.com for each of their product ranges (from their own shop collections). The count is only Kapruka products of <em>their kind</em>, so "Kapruka has soap" doesn't hide that it has no handmade natural soap.</p>
+      ${kap.length ? `<div class="rpt-kap">${kap.map(k => {
+        const [lbl, cls] = RPT_KAP[k.verdict] || ['?', 'failed'];
+        const pct = k.count == null ? 0 : Math.min(100, Math.round(k.count * 10));
+        return `<div class="rpt-kap-row">
+          <div class="term">${escapeHtml(k.term)}${k.their_products ? `<small>${fmtNum(k.their_products)} of theirs</small>` : ''}</div>
+          <div class="bar"><span style="width:${pct}%" class="${cls}"></span></div>
+          <div class="cnt">${k.count == null ? '—' : fmtNum(k.count) + (k.full_page ? '+' : '')}</div>
+          <span class="kap-pill ${cls}">${lbl}</span>
+          <a class="link" target="_blank" rel="noopener" href="${safeUrl(k.search_url)}">Kapruka ↗</a>
+          ${k.kind ? `<div class="samples"><strong>Theirs:</strong> ${escapeHtml(k.kind)}</div>` : ''}
+          ${(k.samples || []).length ? `<div class="samples"><strong>Same kind on Kapruka:</strong> ${k.samples.map(s => `<a target="_blank" rel="noopener" href="${safeUrl(s.url)}">${escapeHtml(s.title)}</a>`).join(' · ')}</div>`
+            : (k.category_exists ? `<div class="samples"><strong>Kapruka's ${escapeHtml(k.term)} today (${fmtNum(k.keyword_hits)}${k.keyword_hits >= 19 ? '+' : ''}), none of their kind:</strong> ${(k.category_samples || []).map(s => `<a target="_blank" rel="noopener" href="${safeUrl(s.url)}">${escapeHtml(s.title)}</a>`).join(' · ')}</div>` : '')}
+        </div>`; }).join('')}</div>`
+        : '<p class="muted">Not searched yet.</p>'}
+    </div>
+
+    <div class="rpt-card">
+      <div class="rpt-card-head"><h3>Questions PC Agent will ask this partner</h3>
+        <button type="button" class="link-btn" data-rpt="suggest">Suggest more</button></div>
+      <p class="muted rpt-small">Asked after the standard brief (Settings → Brief questions). Suggested ones are only asked once you approve them.</p>
+      ${suggested.map(q => `<div class="rq-row suggested">
+          <div class="rq-text">${escapeHtml(q.question)}${q.why ? `<div class="rq-why">${escapeHtml(q.why)}</div>` : ''}</div>
+          <div class="rq-actions"><button type="button" class="btn" data-rq-approve="${q.id}">Approve</button>
+            <button type="button" class="btn secondary" data-rq-reject="${q.id}">Reject</button></div></div>`).join('')}
+      ${approved.map(q => `<div class="rq-row approved">
+          <div class="rq-text"><span class="badge agreed">approved</span> ${escapeHtml(q.question)}${q.source === 'human' ? ` <span class="rq-why">added by ${escapeHtml(q.added_by || 'team')}</span>` : ''}</div>
+          <div class="rq-actions"><button type="button" class="link-btn danger" data-rq-delete="${q.id}">Remove</button></div></div>`).join('')}
+      ${!suggested.length && !approved.length ? '<p class="muted">No extra questions yet.</p>' : ''}
+      ${rejected.length ? `<details class="rq-rejected"><summary>${rejected.length} rejected</summary>${rejected.map(q => `
+          <div class="rq-row"><div class="rq-text muted">${escapeHtml(q.question)}</div>
+          <div class="rq-actions"><button type="button" class="link-btn" data-rq-approve="${q.id}">Approve instead</button></div></div>`).join('')}</details>` : ''}
+      <div class="rq-add">
+        <input type="text" id="rqNewText" placeholder="Add your own question for PC Agent to ask this partner…" aria-label="New question">
+        <button type="button" class="btn" data-rpt="addq">Add</button>
+      </div>
+    </div>
+
+    <div class="rpt-foot">
+      <span id="reportBuildState">${d.building ? '<span class="spinner"></span> Updating…' : d.queued ? '<span class="spinner"></span> Queued for research…' : (d.built_at ? `Updated ${escapeHtml(d.built_at.replace('T', ' ').slice(0, 16))}` : 'Not built yet')}${d.error ? ` · <span class="warn-text">${escapeHtml(d.error)}</span>` : ''}</span>
+      <button type="button" class="btn secondary" data-rpt="rebuild">Refresh report</button>
+    </div>`;
+}
+
+async function onReportClick(e) {
+  const cid = _reportCid;
+  const t = e.target.closest('[data-rpt],[data-rq-approve],[data-rq-reject],[data-rq-delete]');
+  if (!t || !cid) return;
+  const act = t.dataset.rpt;
+  const d = _reportData || {partner: {}};
+  if (act === 'close') return closePartnerReport();
+  if (act === 'chat') { const pid = d.partner.partner_id; closePartnerReport(); switchTab('partnerchats'); return openPartnerChat(pid); }
+  if (act === 'rebuild') return buildPartnerReport({force_site: true});
+  if (act === 'rekapruka') return buildPartnerReport({force_kapruka: true});
+  if (act === 'approve') { await approveCategory(cid, t); return refreshPartnerReport(); }
+  if (act === 'reject') { await rejectCategory(cid, d.partner.concept); return refreshPartnerReport(); }
+  if (act === 'suggest') {
+    t.disabled = true; t.textContent = 'Suggesting…';
+    const r = await jpost(`/api/cards/${cid}/questions/suggest`, {});
+    if (!r.ok) showToast(r.error || 'Could not suggest questions', 'error');
+    return refreshPartnerReport();
+  }
+  if (act === 'addq') {
+    const q = $('#rqNewText').value.trim();
+    if (!q) { showToast('Write the question first.', 'error'); return; }
+    const r = await jpost(`/api/cards/${cid}/questions`, {question: q, added_by: _testerName()});
+    if (!r.ok) { showToast(r.error || 'Could not add', 'error'); return; }
+    $('#rqNewText').value = '';
+    showToast('Added. PC Agent will ask it after the standard brief.');
+    return refreshPartnerReport();
+  }
+  const qid = t.dataset.rqApprove || t.dataset.rqReject;
+  if (qid) {
+    const r = await jpost(`/api/card_questions/${qid}`, {status: t.dataset.rqApprove ? 'approved' : 'rejected'});
+    if (!r.ok) showToast(r.error || 'Update failed', 'error');
+    return refreshPartnerReport();
+  }
+  if (t.dataset.rqDelete) {
+    if (!confirm('Remove this question? PC Agent stops asking it.')) return;
+    await jdelete(`/api/card_questions/${t.dataset.rqDelete}`);
+    return refreshPartnerReport();
+  }
+}
 </script>
 </body>
 </html>

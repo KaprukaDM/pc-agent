@@ -5,10 +5,14 @@ partners — same integration shape Business Scout already uses (a separate
 app calling INTO app_ship.py), not the reverse. See memory:
 kogul-partner-onboarding-agent for the full spec and decisions.
 
-WhatsApp is SIMULATED in this build (user: "dont worry about the webhook
-and all just build the front end for end and backend") — every outbound
-message is logged with simulated=1, never actually sent. Swapping in real
-sends later is a single call-site change (see _send_message docstring).
+WhatsApp has two modes, set by the `whatsapp_live` setting: "0" (default)
+logs every partner-facing message as simulated (nothing is sent), "1" sends
+it for real through the Cloud API. Every outbound message goes through
+_send_and_log, so the mode is enforced in exactly one place.
+
+Access: requests from this machine are allowed; anything else needs HTTP
+basic auth with KOGUL_ADMIN_PASSWORD from .env (only /webhook/whatsapp is
+public, and it verifies Meta's signature itself).
 
 Run: python kogul/app_kogul.py   (defaults to :5010)
 """
@@ -30,6 +34,7 @@ import specialization  # noqa: E402
 import brain  # noqa: E402
 import brand_discovery  # noqa: E402
 import attachments  # noqa: E402
+import partner_report  # noqa: E402
 from claude_cli import run_claude_cli, run_openai_chat_text  # noqa: E402
 
 APP_DIR = Path(__file__).resolve().parent
@@ -41,14 +46,69 @@ app = Flask(__name__, template_folder=str(APP_DIR / "templates"), static_folder=
 # files (kogul.css) were never affected by this — Flask serves those straight
 # off disk regardless.
 app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.config["MAX_CONTENT_LENGTH"] = 80 * 1024 * 1024  # 5 attachments x 15 MB + form overhead
+
+_SCRIPTS_DIR = str(APP_DIR.parent / "scripts")
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+from _env import env as _project_env  # noqa: E402
 
 OPPORTUNITY_TOOL_URL = "http://127.0.0.1:5002"  # app_ship.py — override below if the VPS port differs
 FIND_PARTNERS_TIMEOUT = 150
 
-_JOBS: dict[str, dict] = {}
+
+class _JobStore(dict):
+    """In-memory job results. Finished jobs older than an hour are dropped on
+    each new write so the dict can't grow forever."""
+    _TTL = 3600
+
+    def __setitem__(self, key, value):
+        now = time.time()
+        if isinstance(value, dict):
+            value.setdefault("_t", now)
+        stale = [k for k, v in self.items()
+                 if isinstance(v, dict) and v.get("status") != "running" and now - v.get("_t", now) > self._TTL]
+        for k in stale:
+            del self[k]
+        super().__setitem__(key, value)
+
+
+_JOBS: dict[str, dict] = _JobStore()
 _JOBS_LOCK = threading.Lock()
 
 db.init_db()
+
+
+# ------------------------------------------------------------- access guard
+
+def _is_local_request() -> bool:
+    # A reverse proxy on the same box adds X-Forwarded-For, so proxied traffic
+    # is never mistaken for a local user.
+    return (request.remote_addr in ("127.0.0.1", "::1")
+            and not request.headers.get("X-Forwarded-For")
+            and not request.headers.get("Forwarded"))
+
+
+@app.before_request
+def _access_guard():
+    if request.path.startswith("/webhook/whatsapp"):
+        return None
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        source = request.headers.get("Origin") or request.headers.get("Referer")
+        if source:
+            from urllib.parse import urlparse
+            if urlparse(source).netloc != request.host:
+                return jsonify({"ok": False, "error": "cross-site request refused"}), 403
+    if _is_local_request():
+        return None
+    password = os.environ.get("KOGUL_ADMIN_PASSWORD") or _project_env().get("KOGUL_ADMIN_PASSWORD") or ""
+    if not password:
+        return ("Remote access is disabled: set KOGUL_ADMIN_PASSWORD in .env to allow it.", 403)
+    import hmac
+    auth = request.authorization
+    if not auth or not hmac.compare_digest((auth.password or "").encode(), password.encode()):
+        return ("Login required.", 401, {"WWW-Authenticate": 'Basic realm="PC Agent"'})
+    return None
 
 
 # --------------------------------------------------------------------- util
@@ -306,7 +366,8 @@ def api_weekly_current():
                     cat_dict[json_col] = json.loads(cat_dict.get(json_col) or "[]")
                 except Exception:
                     cat_dict[json_col] = []
-            out.append({**cat_dict, "partners": [dict(p) for p in partners]})
+            out.append({**cat_dict, "partners": [dict(p) for p in partners],
+                        "report": _report_summary(c, cat["id"])})
         # Re-sort display by the stored priority_score rather than the SQL
         # ORDER BY above (raw concept_volume DESC) — kept from the old
         # mixed-pool design where this mattered a lot more (an 'expand'
@@ -568,9 +629,13 @@ def _run_weekly_generate(job_id: str, week: str, num_cats: int, per_cat: int,
         chosen = scored[:num_cats]
 
         inserted = 0
+        new_ids: list[int] = []
         for score, p, metrics_json in chosen:
-            _insert_weekly_category_row(batch_id, p, score, metrics_json)
+            new_ids.append(_insert_weekly_category_row(batch_id, p, score, metrics_json))
             inserted += 1
+        # 2026-10-14, user: "the partner report should be filled before reaching out
+        # / partner report is the decision point" — build every new card's report now.
+        _queue_report_builds(new_ids)
 
         with _JOBS_LOCK:
             _JOBS[job_id] = {"status": "done", "error": None, "batch_id": batch_id,
@@ -592,8 +657,20 @@ def api_category_approve(cat_id):
         cat = c.execute("SELECT * FROM weekly_categories WHERE id = ?", (cat_id,)).fetchone()
         if not cat:
             return jsonify({"ok": False, "error": "unknown category"}), 404
+        # 2026-10-14, user: "partner report is the decision point" — a business is
+        # never contacted before its report has been built and could be read.
+        if cat["source"] == "brand_discovery" and not c.execute(
+                "SELECT 1 FROM card_reports WHERE category_id = ? AND profile_json IS NOT NULL", (cat_id,)).fetchone():
+            _queue_report_builds([cat_id])
+            return jsonify({"ok": False, "error": "The partner report isn't ready yet. Open it, review it, "
+                                                  "then approve from there (it's being built now)."}), 409
         if cat["review_status"] == "approved":
-            return jsonify({"ok": False, "error": "already approved"}), 400
+            # an approve whose sourcing job died (error / server restart) left
+            # no partners behind — allow it to be retried instead of stuck forever
+            has_partners = c.execute("SELECT 1 FROM partners WHERE weekly_category_id = ? LIMIT 1",
+                                     (cat_id,)).fetchone()
+            if has_partners:
+                return jsonify({"ok": False, "error": "already approved"}), 400
         c.execute("UPDATE weekly_categories SET review_status = 'approved', reviewed_at = ? WHERE id = ?",
                    (db.now(), cat_id))
         batch = c.execute("SELECT partners_per_category FROM weekly_batches WHERE id = ?", (cat["batch_id"],)).fetchone()
@@ -635,6 +712,14 @@ def _run_category_approve(job_id: str, cat_id: int, cat: dict, per_cat: int) -> 
                 brand_phones = json.loads(cat.get("brand_phones") or "[]")
             except (json.JSONDecodeError, TypeError):
                 brand_phones = []
+            # a proven WhatsApp number first, then mobiles, then landlines —
+            # WhatsApp outreach to a landline (+94 11 …) can never be delivered
+            wa_first = [cat["brand_whatsapp"]] if cat.get("brand_whatsapp") else []
+            ordered = []
+            for ph in wa_first + sorted(brand_phones, key=lambda x: 0 if _is_sl_mobile(x) else 1):
+                if ph and _to_wa_number(ph) not in {_to_wa_number(o) for o in ordered}:
+                    ordered.append(ph)
+            brand_phones = ordered
             partners = [{
                 "name": concept,
                 "phone": brand_phones[0] if len(brand_phones) > 0 else None,
@@ -643,7 +728,7 @@ def _run_category_approve(job_id: str, cat_id: int, cat: dict, per_cat: int) -> 
                 "address": None,
                 "url": cat.get("business_url"),
                 "wa_link": None,
-                "is_landline": False,
+                "is_landline": bool(brand_phones) and not _is_sl_mobile(brand_phones[0]),
                 "product_verified": True,  # the fetched site itself is the evidence
                 "is_specialist": True,     # this candidate IS the specialist business by construction
                 "specialization_reason": cat.get("worth_pursuing_reason") or "",
@@ -652,6 +737,7 @@ def _run_category_approve(job_id: str, cat_id: int, cat: dict, per_cat: int) -> 
             try:
                 partners = _find_partners(concept)[:per_cat]
             except Exception as e:
+                _reopen_category_review(cat_id)
                 with _JOBS_LOCK:
                     _JOBS[job_id] = {"status": "error", "error": f"find_partners failed: {e}"}
                 return
@@ -674,18 +760,38 @@ def _run_category_approve(job_id: str, cat_id: int, cat: dict, per_cat: int) -> 
         opened = 0
         open_failures = []
         for pid in partner_ids:
-            result, status = _do_partner_auto_reply(pid, opening=True)
-            if status == 200 and result.get("ok"):
+            try:
+                result, status = _do_partner_auto_reply(pid, opening=True)
+            except Exception as e:
+                result, status = {"ok": False, "error": str(e)}, 500
+            if status == 200 and result.get("auto_replied") and not result.get("send_error"):
                 opened += 1
             else:
-                open_failures.append({"partner_id": pid, "error": result.get("error")})
+                open_failures.append({"partner_id": pid,
+                                      "error": result.get("send_error") or result.get("error") or result.get("reason")})
+
+        # 2026-10-14: build each partner report straight away (store SKU count,
+        # live Kapruka search of their product types, suggested questions) so
+        # it's ready when someone opens it.
+        _start_report_build(cat_id)
 
         with _JOBS_LOCK:
             _JOBS[job_id] = {"status": "done", "error": None, "partners_found": len(partners),
-                              "opened": opened, "open_failures": open_failures}
+                              "opened": opened, "open_failures": open_failures, "live": _wa_live()}
     except Exception as e:
+        with db.conn() as c:
+            has_partners = c.execute("SELECT 1 FROM partners WHERE weekly_category_id = ? LIMIT 1",
+                                     (cat_id,)).fetchone()
+        if not has_partners:
+            _reopen_category_review(cat_id)
         with _JOBS_LOCK:
             _JOBS[job_id] = {"status": "error", "error": str(e)}
+
+
+def _reopen_category_review(cat_id: int) -> None:
+    with db.conn() as c:
+        c.execute("UPDATE weekly_categories SET review_status = 'pending_review', reviewed_at = NULL WHERE id = ?",
+                  (cat_id,))
 
 
 @app.route("/api/categories/<int:cat_id>/reject", methods=["POST"])
@@ -699,7 +805,9 @@ def api_category_reject(cat_id):
     # reseller, not an independent brand") actually changes what gets
     # surfaced next week, not just blocking this exact name from reappearing
     # (prior_keys/exclude_business_names already did that).
-    reason = (request.json or {}).get("reason", "").strip() if request.is_json else ""
+    reason = ((request.get_json(silent=True) or {}).get("reason") or "").strip()
+    if not reason:
+        return jsonify({"ok": False, "error": "a reject reason is required (it trains next week's sourcing)"}), 400
     with db.conn() as c:
         cat = c.execute("SELECT id FROM weekly_categories WHERE id = ?", (cat_id,)).fetchone()
         if not cat:
@@ -1016,7 +1124,6 @@ def _run_missing_item_ads_refresh(job_id: str, item_ids: list[str]) -> None:
                 _JOBS[job_id] = {"status": "done", "error": None, "updated": 0}
             return
 
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
         import google_ads_keyword_ideas as gaki
         ideas = gaki.generate_keyword_ideas(terms, geo_target="Sri Lanka")
         volume_by_term = {idea["keyword"].strip().lower(): idea["avg_monthly_searches"] for idea in ideas}
@@ -1095,7 +1202,7 @@ def _run_missing_item_find_partner(job_id: str, row: dict) -> None:
                                         "missing_item_id": row.get("id"),
                                         "demand_evidence": p.get("demand_evidence") or [],
                                         "search_keywords": p.get("search_keywords") or []})
-            _insert_weekly_category_row(batch_id, p, _BRAND_DISCOVERY_SCORE, metrics_json)
+            _queue_report_builds([_insert_weekly_category_row(batch_id, p, _BRAND_DISCOVERY_SCORE, metrics_json)])
             inserted += 1
 
         with _JOBS_LOCK:
@@ -1456,19 +1563,649 @@ def api_partner_analyze(partner_id):
     }})
 
 
-def _log_message(partner_id: int, sender: str, body: str, simulated: bool = True,
-                  atts: list[dict] | None = None) -> None:
-    """Records an outbound/inbound message. simulated=True means: Kogul
-    decided to send this, but no real WhatsApp API call was made (see
-    module docstring). To wire real sends later: call
-    scripts/notify_whatsapp.py's send_text(cfg, partner_phone, body) here
-    instead of only logging, and pass simulated=False."""
+# ------------------------------------------------------------------ Partner report
+# 2026-10-14 (see kogul/partner_report.py). Keyed to the BUSINESS CARD
+# (weekly_categories row), not the chat partner — user: "i want the partner
+# report before reaching out". Once approved, the card's partner row and chat
+# feed into it. GET is cheap (DB only, live status) so the report polls it;
+# the AI + live-search build runs as a background job, only when the chat
+# changed (or on demand).
+
+def _approved_partner_questions(partner_id: int) -> list[str]:
+    """Approved questions for the business this partner row belongs to."""
     with db.conn() as c:
-        c.execute(
-            "INSERT INTO messages (partner_id, sender, body, simulated, created_at, attachments) VALUES (?,?,?,?,?,?)",
-            (partner_id, sender, body, int(simulated), db.now(), attachments.dumps(atts))
+        return [r["question"] for r in c.execute(
+            "SELECT q.question FROM card_questions q JOIN partners p ON p.weekly_category_id = q.category_id "
+            "WHERE p.id = ? AND q.status = 'approved' ORDER BY q.id", (partner_id,)).fetchall()]
+
+
+def _report_card(category_id: int) -> dict | None:
+    """The business card plus (if approved) its partner row, flattened."""
+    with db.conn() as c:
+        wc = c.execute("SELECT * FROM weekly_categories WHERE id = ?", (category_id,)).fetchone()
+        if not wc:
+            return None
+        p = c.execute("SELECT * FROM partners WHERE weekly_category_id = ? ORDER BY id LIMIT 1",
+                      (category_id,)).fetchone()
+    card = dict(wc)
+    card["category_id"] = category_id
+    card["name"] = card.get("concept")
+    card["url"] = card.get("business_url")
+    card["partner_id"] = None
+    card["status"] = None
+    if p:
+        p = dict(p)
+        card.update({"partner_id": p["id"], "status": p["status"], "phone": p.get("phone"),
+                     "needs_handover": p.get("needs_handover"), "human_takeover": p.get("human_takeover"),
+                     "not_agreed_reason": p.get("not_agreed_reason"), "last_message_at": p.get("last_message_at"),
+                     "call_slot": p.get("call_slot"), "call_contact_name": p.get("call_contact_name"),
+                     "url": p.get("url") or card["url"], "name": p.get("name") or card["name"]})
+    return card
+
+
+def _card_messages(card: dict, with_body: bool = False) -> list[dict]:
+    if not card.get("partner_id"):
+        return []
+    cols = "sender, body, created_at" if with_body else "sender, created_at"
+    with db.conn() as c:
+        return [dict(m) for m in c.execute(f"SELECT {cols} FROM messages WHERE partner_id = ? ORDER BY id",
+                                            (card["partner_id"],)).fetchall()]
+
+
+def _loads(s, default):
+    try:
+        return json.loads(s) if s else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _brief_missing(profile: dict, skus) -> list[str]:
+    """The four pre-collected brief items research must fill BEFORE outreach
+    (2026-10-14, user chose "Research fills it, no chat"): what they sell,
+    product count, location, Colombo-or-not. Whether an outside-Colombo
+    business accepts consignment is their decision, so it's not a research
+    item — the report shows it as the one question for the chat."""
+    if not profile:
+        return ["what they sell", "product count", "location", "Colombo or not"]
+    return [name for name, ok in (("what they sell", bool(profile.get("product_types"))),
+                                  ("product count", skus is not None),
+                                  ("location", bool(profile.get("location"))),
+                                  ("Colombo or not", profile.get("in_colombo") in ("yes", "no"))) if not ok]
+
+
+def _report_pipeline(card: dict, msgs: list, profile: dict, skus=None) -> list[dict]:
+    """Steps for the report's status bar, from live DB state. 2026-10-14, user:
+    "Brief collected ... should be the first step and then approve and opening
+    message sent": the brief is filled from research BEFORE outreach; the chat
+    only fills what research couldn't find. The goal is a booked team call."""
+    senders = {m["sender"] for m in msgs}
+    missing = _brief_missing(profile, skus)
+    brief = {"label": "Brief collected" if not missing else "Brief incomplete",
+             "state": "done" if not missing else ("attention" if profile else "todo"),
+             "detail": "all 4 from research" if not missing else f"missing: {', '.join(missing)}"}
+    review = card.get("review_status")
+    if review == "rejected":
+        return [{"label": "Found", "state": "done"}, brief,
+                {"label": f"Rejected: {card.get('reject_reason') or 'no reason'}", "state": "stopped"}]
+    steps = [{"label": "Found", "state": "done"}, brief,
+             {"label": "Approved", "state": "done" if review == "approved" else "active"}]
+    if review != "approved":
+        return steps + [{"label": "Opening sent", "state": "todo"}, {"label": "Partner replied", "state": "todo"},
+                        {"label": "Call booked", "state": "todo"}, {"label": "Decision", "state": "todo"}]
+    status = card.get("status")
+    call = card.get("call_slot")
+    call_step = {"label": "Call booked", "state": "done" if call else ("active" if "partner" in senders else "todo"),
+                 "detail": call + (f" · {card['call_contact_name']}" if card.get("call_contact_name") else "") if call else None}
+    if status == "agreed":
+        outcome, state = "Agreed, with PC team", "done"
+    elif status == "not_agreed":
+        outcome, state = f"Not agreed: {card.get('not_agreed_reason') or 'no reason'}", "stopped"
+    elif status == "unresponsive":
+        outcome, state = "Unresponsive", "stopped"
+    elif card.get("needs_handover"):
+        outcome, state = "Needs a human", "attention"
+    else:
+        outcome, state = "Decision pending", "todo"
+    return steps + [
+        {"label": "Opening sent", "state": "done" if "kogul" in senders else "todo"},
+        {"label": "Partner replied", "state": "done" if "partner" in senders else "todo"},
+        call_step,
+        {"label": outcome, "state": state},
+    ]
+
+
+def _known_facts_for_partner(partner_id: int) -> dict:
+    """Facts the report already has from research (website / store / verified
+    Google), so PC Agent doesn't re-ask them in the brief: {text, location,
+    in_colombo, sku_count, products} — brain._skip_known drops the answered
+    questions from the list, `text` is shown to the model."""
+    with db.conn() as c:
+        row = c.execute("SELECT r.* FROM card_reports r JOIN partners p ON p.weekly_category_id = r.category_id "
+                        "WHERE p.id = ?", (partner_id,)).fetchone()
+    if not row or not row["profile_json"]:
+        return {}
+    catalog, profile = _loads(row["catalog_json"], {}), _loads(row["profile_json"], {})
+    profile = partner_report.merge_research_location(profile, _loads(row["research_json"], {}))
+    facts = []
+    if profile.get("product_types"):
+        facts.append("- What they sell: " + "; ".join(t.get("kind") or t.get("search") for t in profile["product_types"]))
+    if catalog.get("count") is not None:
+        facts.append(f"- Product count: {catalog['count']} products on their online store (so don't ask how many)")
+    if profile.get("location") and profile.get("location_source") in ("website", "google"):
+        facts.append(f"- Based in: {profile['location']} (from their {'website' if profile['location_source'] == 'website' else 'Google listing'})"
+                     + (" — within Colombo District, so don't ask about consignment" if profile.get("in_colombo") == "yes" else ""))
+    researched_loc = profile.get("location") if profile.get("location_source") in ("website", "google") else None
+    return {"text": "\n".join(facts), "location": researched_loc,
+            "in_colombo": profile.get("in_colombo") if researched_loc else None,
+            "sku_count": catalog.get("count"), "products": bool(profile.get("product_types"))}
+
+
+_REPORT_BUILDS: dict[int, str] = {}  # category_id -> job id of a running build
+_report_queue: list[int] = []         # category_ids waiting for a background build, one at a time
+_report_queue_lock = threading.Lock()
+_report_workers: list[threading.Thread] = []
+_report_taken: set[int] = set()  # being built by a worker right now
+
+
+def _queue_report_builds(category_ids: list[int]) -> None:
+    """Builds reports ONE AT A TIME in the background (each makes live Kapruka
+    searches, which must stay paced — memory: kapruka-cloudflare-rate-limit)."""
+    with _report_queue_lock:
+        for cid in category_ids:
+            if cid and cid not in _report_queue:
+                _report_queue.append(cid)
+        _report_workers[:] = [w for w in _report_workers if w.is_alive()]
+        while len(_report_workers) < 3:
+            w = threading.Thread(target=_report_queue_loop, daemon=True)
+            _report_workers.append(w)
+            w.start()
+
+
+def _report_queue_loop() -> None:
+    while True:
+        with _report_queue_lock:
+            free = [x for x in _report_queue if x not in _report_taken]
+            if not free:
+                return
+            cid = free[0]
+            _report_taken.add(cid)
+        try:
+            with db.conn() as c:
+                done = c.execute("SELECT 1 FROM card_reports WHERE category_id = ? AND profile_json IS NOT NULL "
+                                 "AND research_json IS NOT NULL", (cid,)).fetchone()
+            # already built (e.g. someone opened it meanwhile) -> skip; a running
+            # build is simply waited on (_start_report_build returns its job)
+            job = None if done else _start_report_build(cid)
+            while job:
+                with _JOBS_LOCK:
+                    if _JOBS.get(job, {}).get("status") != "running":
+                        break
+                time.sleep(2)
+        except Exception as e:
+            print(f"[report queue] {cid}: {e}", file=sys.stderr)
+        with _report_queue_lock:
+            _report_taken.discard(cid)
+            if cid in _report_queue:
+                _report_queue.remove(cid)
+
+
+def _report_summary(c, category_id: int) -> dict:
+    """Small summary for the Weekly Outreach card (verdict + key facts)."""
+    rep = c.execute("SELECT catalog_json, profile_json, kapruka_json, research_json FROM card_reports WHERE category_id = ?",
+                    (category_id,)).fetchone()
+    with _report_queue_lock:
+        queued = category_id in _report_queue
+    if not rep or not rep["profile_json"]:
+        return {"built": False, "queued": queued}
+    catalog, kapruka, research = _loads(rep["catalog_json"], {}), _loads(rep["kapruka_json"], []), _loads(rep["research_json"], {})
+    profile = partner_report.merge_research_location(_loads(rep["profile_json"], {}), research)
+    skus, src = partner_report.effective_skus(profile, catalog, research)
+    v = partner_report.lucrative_verdict(profile, catalog, kapruka, research)
+    return {"built": True, "queued": queued, "level": v["level"], "label": v["label"], "skus": skus,
+            "sku_lower_bound": bool(src and "at least" in src), "location": profile.get("location"),
+            "in_colombo": profile.get("in_colombo"),
+            "gaps": sum(1 for k in kapruka if k.get("verdict") in ("none", "thin")), "ranges": len(kapruka),
+            "brand_value": (research.get("brand_value") or {}).get("level")}
+
+
+def _report_payload(category_id: int) -> dict | None:
+    card = _report_card(category_id)
+    if not card:
+        return None
+    msgs = [m for m in _card_messages(card) if m["sender"] != "system"]
+    with db.conn() as c:
+        rep = c.execute("SELECT * FROM card_reports WHERE category_id = ?", (category_id,)).fetchone()
+        qs = [dict(q) for q in c.execute(
+            "SELECT * FROM card_questions WHERE category_id = ? ORDER BY id", (category_id,)).fetchall()]
+    rep = dict(rep) if rep else {}
+    catalog = _loads(rep.get("catalog_json"), {})
+    research = _loads(rep.get("research_json"), {})
+    profile = partner_report.merge_research_location(_loads(rep.get("profile_json"), {}), research)
+    kapruka = _loads(rep.get("kapruka_json"), [])
+    skus, sku_src = partner_report.effective_skus(profile, catalog, research) if (profile or catalog) else (None, None)
+    with _JOBS_LOCK:
+        job = _REPORT_BUILDS.get(category_id)
+        building = bool(job and _JOBS.get(job, {}).get("status") == "running")
+    return {
+        "category_id": category_id,
+        "partner": {k: card.get(k) for k in ("partner_id", "name", "concept", "department", "url", "phone", "status",
+                                              "review_status", "needs_handover", "human_takeover", "not_agreed_reason",
+                                              "ecommerce_platform", "products_to_bring_in", "worth_pursuing_reason",
+                                              "last_message_at", "source", "call_slot", "call_contact_name")},
+        "department_label": brain.department_label(card.get("department")),
+        "images": _loads(card.get("brand_images"), [])[:4],
+        "pipeline": _report_pipeline(card, msgs, profile, skus),
+        "research": research,
+        "call": {"slot": card.get("call_slot"), "contact": card.get("call_contact_name")} if card.get("call_slot") else None,
+        "next_slots": brain.call_slots(),
+        "msg_count": len(msgs),
+        "built": bool(profile),
+        "built_at": rep.get("built_at"),
+        "stale": not profile or rep.get("msg_count") != len(msgs),
+        "building": building,
+        "build_job": job if building else None,
+        "queued": category_id in _report_queue,
+        "error": rep.get("error"),
+        "catalog": {k: catalog.get(k) for k in ("count", "source", "note")},
+        "profile": profile,
+        "kapruka": kapruka,
+        "skus": skus, "sku_source": sku_src, "min_skus": partner_report.MIN_SKUS,
+        "verdict": partner_report.lucrative_verdict(profile, catalog, kapruka, research) if profile else None,
+        "standard_questions": brain.standard_brief_questions(),
+        "partner_questions": qs,
+    }
+
+
+def _upgrade_existing_reports() -> None:
+    """Startup pass for reports built before 2026-10-14's two fixes (user: "why
+    no facebook, instagram followers detected, tiktok" / "theres SKU more than
+    six"): (1) follower counts read straight from each profile replace web
+    research's estimates — brand value recomputed, no rebuild needed; (2) cards
+    with no exact product list are rebuilt so the shop-subdomain check runs.
+    Idempotent: a report whose followers were already read directly is skipped."""
+    try:
+        with db.conn() as c:
+            rows = c.execute(
+                "SELECT r.category_id, r.research_json, r.catalog_json, wc.social_links FROM card_reports r "
+                "JOIN weekly_categories wc ON wc.id = r.category_id WHERE wc.source = 'brand_discovery' "
+                "AND wc.review_status = 'pending_review' AND r.research_json IS NOT NULL").fetchall()
+        rebuild = []
+        for r in rows:
+            research = _loads(r["research_json"], {})
+            if research and not any(f.get("read") for f in research.get("followers") or []) \
+                    and not research.get("followers_read_at"):
+                research = partner_report.refresh_followers(research, r["social_links"])
+                research["followers_read_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                with db.conn() as c:
+                    c.execute("UPDATE card_reports SET research_json = ? WHERE category_id = ?",
+                              (json.dumps(research, ensure_ascii=False), r["category_id"]))
+                time.sleep(1)  # gentle on the social sites
+            cat = _loads(r["catalog_json"], {})
+            if not cat.get("hosts_checked") and (cat.get("count") is None or "sitemap" in str(cat.get("source") or "")):
+                rebuild.append(r["category_id"])
+        if rebuild:
+            _queue_report_builds(rebuild)
+    except Exception as e:
+        print(f"[report upgrade] {e}")
+
+
+def _run_report_build(job_id: str, category_id: int, force_kapruka: bool, force_site: bool) -> None:
+    errors = []
+    try:
+        card = _report_card(category_id)
+        conv = [m for m in _card_messages(card, with_body=True) if m["sender"] != "system"]
+        with db.conn() as c:
+            rep = c.execute("SELECT * FROM card_reports WHERE category_id = ?", (category_id,)).fetchone()
+            has_qs = c.execute("SELECT 1 FROM card_questions WHERE category_id = ? LIMIT 1", (category_id,)).fetchone()
+            qs = [r["question"] for r in c.execute("SELECT question FROM card_questions WHERE category_id = ? "
+                                                    "AND status = 'approved' ORDER BY id", (category_id,)).fetchall()]
+        rep = dict(rep) if rep else {}
+
+        catalog = _loads(rep.get("catalog_json"), None)
+        if catalog is None or force_site or catalog.get("count") is None \
+                or "sitemap" in str(catalog.get("source") or ""):  # no exact list yet: always re-check (cheap)
+            catalog = partner_report.store_catalog(card.get("url"), card.get("ecommerce_platform"))
+        site = _loads(rep.get("site_json"), None)
+        if site is None or force_site or "product_pages" not in site:  # older scans lack the product-page count
+            site = partner_report.site_location_text(card.get("url"))
+        if (catalog.get("count") is None or "sitemap" in str(catalog.get("source") or "")) and site.get("product_pages"):
+            # no store product API: distinct product pages linked on their site, a real lower bound
+            catalog = {**catalog, "seen_count": site["product_pages"]}
+        research = _loads(rep.get("research_json"), None)
+        if research is None or force_site:
+            try:
+                research = partner_report.web_research(card, model=db.get_settings().get("claude_model", "claude-sonnet-5"))
+            except Exception as e:
+                # keep the last good research (2026-10-14: a timed-out refresh wiped Cecrafto's found location)
+                research = _loads(rep.get("research_json"), None)
+                errors.append(f"web research failed{' (kept the previous result)' if research else ''}: {str(e)[:150]}")
+        if research:  # exact follower counts straight from each profile (cheap; web search misses IG/TikTok)
+            research = partner_report.refresh_followers(research, card.get("social_links"))
+
+        profile = _loads(rep.get("profile_json"), {})
+        try:
+            profile = partner_report.extract_profile(card, catalog, conv, brain.standard_brief_questions() + qs,
+                                                     site_text=site.get("snippets", ""))
+        except Exception as e:
+            errors.append(f"summary/analysis failed: {str(e)[:200]}")
+
+        kapruka = _loads(rep.get("kapruka_json"), [])
+        terms = profile.get("product_types") or []
+        if terms and (force_kapruka or json.dumps(terms) != rep.get("kapruka_terms")):
+            kapruka = partner_report.kapruka_check(terms)
+
+        if not has_qs:
+            try:
+                for s in partner_report.suggest_questions(card, catalog, brain.standard_brief_questions()):
+                    with db.conn() as c:
+                        c.execute("INSERT INTO card_questions (category_id, question, why, source, status, created_at) "
+                                  "VALUES (?,?,?, 'ai', 'suggested', ?)", (category_id, s["question"], s["why"], db.now()))
+            except Exception as e:
+                errors.append(f"question suggestions failed: {str(e)[:150]}")
+
+        with db.conn() as c:
+            c.execute(
+                "INSERT INTO card_reports (category_id, catalog_json, site_json, research_json, profile_json, kapruka_json, "
+                "kapruka_terms, error, msg_count, built_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(category_id) DO UPDATE SET "
+                "catalog_json=excluded.catalog_json, site_json=excluded.site_json, research_json=excluded.research_json, "
+                "profile_json=excluded.profile_json, "
+                "kapruka_json=excluded.kapruka_json, kapruka_terms=excluded.kapruka_terms, error=excluded.error, "
+                "msg_count=excluded.msg_count, built_at=excluded.built_at",
+                (category_id, json.dumps(catalog), json.dumps(site), json.dumps(research) if research is not None else None,
+                 json.dumps(profile) if profile else None,
+                 json.dumps(kapruka), json.dumps(terms), "; ".join(errors) or None, len(conv), db.now()))
+        with _JOBS_LOCK:
+            _JOBS[job_id] = {"status": "done", "error": "; ".join(errors) or None}
+    except Exception as e:
+        with _JOBS_LOCK:
+            _JOBS[job_id] = {"status": "error", "error": str(e)[:300]}
+
+
+def _start_report_build(category_id: int, force_kapruka: bool = False, force_site: bool = False) -> str:
+    with _JOBS_LOCK:
+        running = _REPORT_BUILDS.get(category_id)
+        if running and _JOBS.get(running, {}).get("status") == "running":
+            return running
+        job_id = uuid.uuid4().hex
+        _JOBS[job_id] = {"status": "running", "error": None}
+        _REPORT_BUILDS[category_id] = job_id
+    threading.Thread(target=_run_report_build, args=(job_id, category_id, force_kapruka, force_site),
+                     daemon=True).start()
+    return job_id
+
+
+@app.route("/api/cards/<int:category_id>/report")
+def api_card_report(category_id):
+    data = _report_payload(category_id)
+    if not data:
+        return jsonify({"ok": False, "error": "unknown business"}), 404
+    return jsonify({"ok": True, **data})
+
+
+@app.route("/api/cards/<int:category_id>/report/build", methods=["POST"])
+def api_card_report_build(category_id):
+    if not _report_card(category_id):
+        return jsonify({"ok": False, "error": "unknown business"}), 404
+    body = request.get_json(silent=True) or {}
+    job = _start_report_build(category_id, bool(body.get("force_kapruka")), bool(body.get("force_site")))
+    return jsonify({"ok": True, "job_id": job})
+
+
+@app.route("/api/report_jobs/<job_id>")
+def api_report_job_poll(job_id):
+    with _JOBS_LOCK:
+        job = dict(_JOBS.get(job_id, {"status": "error", "error": "unknown job"}))
+    return jsonify({"ok": True, **job})
+
+
+@app.route("/api/cards/<int:category_id>/questions", methods=["POST"])
+def api_card_question_add(category_id):
+    body = request.get_json(silent=True) or {}
+    q = (body.get("question") or "").strip()
+    if not q:
+        return jsonify({"ok": False, "error": "write the question first"}), 400
+    if not _report_card(category_id):
+        return jsonify({"ok": False, "error": "unknown business"}), 404
+    with db.conn() as c:
+        c.execute("INSERT INTO card_questions (category_id, question, source, status, added_by, created_at, decided_at) "
+                  "VALUES (?,?, 'human', 'approved', ?, ?, ?)",
+                  (category_id, q[:300], (body.get("added_by") or "").strip()[:80] or None, db.now(), db.now()))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/cards/<int:category_id>/questions/suggest", methods=["POST"])
+def api_card_question_suggest(category_id):
+    card = _report_card(category_id)
+    if not card:
+        return jsonify({"ok": False, "error": "unknown business"}), 404
+    with db.conn() as c:
+        rep = c.execute("SELECT catalog_json FROM card_reports WHERE category_id = ?", (category_id,)).fetchone()
+        existing = [r["question"] for r in c.execute(
+            "SELECT question FROM card_questions WHERE category_id = ?", (category_id,)).fetchall()]
+    catalog = _loads(rep["catalog_json"] if rep else None, {})
+    try:
+        new = partner_report.suggest_questions(card, catalog, brain.standard_brief_questions() + existing)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"could not suggest questions: {str(e)[:200]}"}), 502
+    with db.conn() as c:
+        for s in new:
+            c.execute("INSERT INTO card_questions (category_id, question, why, source, status, created_at) "
+                      "VALUES (?,?,?, 'ai', 'suggested', ?)", (category_id, s["question"], s["why"], db.now()))
+    return jsonify({"ok": True, "added": len(new)})
+
+
+@app.route("/api/card_questions/<int:qid>", methods=["POST"])
+def api_card_question_decide(qid):
+    status = ((request.get_json(silent=True) or {}).get("status") or "").strip()
+    if status not in ("approved", "rejected", "suggested"):
+        return jsonify({"ok": False, "error": "status must be approved, rejected or suggested"}), 400
+    with db.conn() as c:
+        cur = c.execute("UPDATE card_questions SET status = ?, decided_at = ? WHERE id = ?", (status, db.now(), qid))
+    if not cur.rowcount:
+        return jsonify({"ok": False, "error": "unknown question"}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/api/card_questions/<int:qid>", methods=["DELETE"])
+def api_card_question_delete(qid):
+    with db.conn() as c:
+        c.execute("DELETE FROM card_questions WHERE id = ?", (qid,))
+    return jsonify({"ok": True})
+
+
+def _log_message(partner_id: int, sender: str, body: str, simulated: bool = True,
+                  atts: list[dict] | None = None, send_status: str | None = None,
+                  wa_message_id: str | None = None, send_error: str | None = None) -> int:
+    """Records one message row. Only records — outbound partner-facing text
+    must go through _send_and_log, which decides whether it is really sent.
+    simulated=True means no WhatsApp API call delivered it."""
+    if send_status is None:
+        send_status = "simulated" if simulated else "sent"
+    with db.conn() as c:
+        cur = c.execute(
+            "INSERT INTO messages (partner_id, sender, body, simulated, created_at, attachments, "
+            "send_status, wa_message_id, send_error) VALUES (?,?,?,?,?,?,?,?,?)",
+            (partner_id, sender, body, int(simulated), db.now(), attachments.dumps(atts),
+             send_status, wa_message_id, send_error)
         )
         c.execute("UPDATE partners SET last_message_at = ? WHERE id = ?", (db.now(), partner_id))
+        return cur.lastrowid
+
+
+# ---------------------------------------------------------- outbound WhatsApp
+
+def _wa_live() -> bool:
+    return db.get_settings().get("whatsapp_live") == "1"
+
+
+def _to_wa_number(raw: str | None) -> str:
+    """E.164 digits without '+'. Local Sri Lankan numbers (0771234567 /
+    771234567) get the 94 country code."""
+    digits = re.sub(r"\D", "", raw or "")
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if digits.startswith("0") and len(digits) == 10:
+        digits = "94" + digits[1:]
+    elif len(digits) == 9:
+        digits = "94" + digits
+    return digits
+
+
+def _is_sl_mobile(raw: str | None) -> bool:
+    d = _to_wa_number(raw)
+    return d.startswith("947") and len(d) == 11
+
+
+_WINDOW_SAFE_HOURS = 23.5  # WhatsApp's window is 24h; stop free-form text a little early
+
+
+def _hours_since_partner_wrote(partner_id: int) -> float | None:
+    """Hours since the partner's last REAL inbound message, or None if they
+    never wrote (or the timestamp is unreadable)."""
+    with db.conn() as c:
+        row = c.execute(
+            "SELECT created_at FROM messages WHERE partner_id = ? AND sender = 'partner' AND simulated = 0 "
+            "ORDER BY id DESC LIMIT 1", (partner_id,)
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        return _hours_since(row["created_at"])
+    except ValueError:
+        return None
+
+
+def _customer_window_open(partner_id: int) -> bool:
+    """WhatsApp only allows free-form text within 24h of the partner's last
+    REAL inbound message; outside it, only an approved template goes through."""
+    hours = _hours_since_partner_wrote(partner_id)
+    return hours is not None and hours < _WINDOW_SAFE_HOURS
+
+
+def _send_and_log(partner_id: int, sender: str, body: str, atts: list[dict] | None = None,
+                  to_phone: str | None = None) -> dict:
+    """The one place a partner-facing message leaves the app. In simulation
+    mode it is only logged (send_status='simulated'). In live mode it is sent
+    for real; a failure is logged as send_status='failed' with the reason and
+    reported back (ok=False) — never silently recorded as sent."""
+    if not _wa_live():
+        mid = _log_message(partner_id, sender, body, simulated=True, atts=atts)
+        return {"ok": True, "sent": False, "simulated": True, "message_id": mid}
+
+    if to_phone is None:
+        with db.conn() as c:
+            row = c.execute("SELECT phone FROM partners WHERE id = ?", (partner_id,)).fetchone()
+        to_phone = row["phone"] if row else None
+    to = _to_wa_number(to_phone)
+    if len(to) < 10:
+        err = "no valid phone number on file"
+        mid = _log_message(partner_id, sender, body, simulated=True, atts=atts,
+                           send_status="failed", send_error=err)
+        return {"ok": False, "sent": False, "error": err, "message_id": mid}
+
+    import notify_whatsapp
+    cfg = _project_env()
+    settings = db.get_settings()
+    logged_body = body
+    try:
+        if _customer_window_open(partner_id):
+            res = notify_whatsapp.send_text(cfg, to, body)
+        else:
+            template = (settings.get("wa_outreach_template") or "").strip()
+            if not template:
+                raise RuntimeError("partner is outside WhatsApp's 24h reply window and no approved outreach "
+                                   "template is set (Settings → WhatsApp), so free-form text would be rejected")
+            res = notify_whatsapp.send_template(cfg, to, template,
+                                                (settings.get("wa_outreach_template_lang") or "en_US").strip())
+            logged_body = f"[sent as approved template '{template}'] {body}"
+        if isinstance(res, dict) and res.get("error"):
+            raise RuntimeError(res.get("message") or f"WhatsApp API error {res.get('code')}")
+        wa_id = ((res or {}).get("messages") or [{}])[0].get("id")
+        if not wa_id:
+            raise RuntimeError("WhatsApp API returned no message id")
+        for a in atts or []:
+            try:
+                notify_whatsapp.send_document(cfg, to, attachments.path_of(a), None, False)
+            except (Exception, SystemExit) as e:
+                _log_message(partner_id, "system", f"Attachment {a.get('orig')} failed to send: {e}", simulated=True)
+    except (Exception, SystemExit) as e:
+        err = str(e)[:400]
+        mid = _log_message(partner_id, sender, body, simulated=True, atts=atts,
+                           send_status="failed", send_error=err)
+        return {"ok": False, "sent": False, "error": err, "message_id": mid}
+    mid = _log_message(partner_id, sender, logged_body, simulated=False, atts=atts,
+                       send_status="sent", wa_message_id=wa_id)
+    return {"ok": True, "sent": True, "simulated": False, "message_id": mid, "wa_message_id": wa_id}
+
+
+def _auto_reply_blocked(partner) -> str | None:
+    """Why PC Agent must stay quiet on this chat, or None if it may reply."""
+    if partner["human_takeover"]:
+        return "a human has taken over this chat"
+    if partner["needs_handover"]:
+        return "waiting for a human (handover requested)"
+    if partner["status"] == "agreed":
+        return "partner agreed — the Partner Central team owns this chat now"
+    if partner["status"] == "removed":
+        return "partner was removed"
+    return None
+
+
+def _record_partner_inbound(partner_id: int, text: str, simulated: bool,
+                            atts: list[dict] | None = None, wa_message_id: str | None = None) -> int:
+    """Logs a partner message and moves the funnel: a reply revives an
+    unresponsive chat and stops the no-reply clock."""
+    mid = _log_message(partner_id, "partner", text, simulated=simulated, atts=atts,
+                       send_status="received", wa_message_id=wa_message_id)
+    with db.conn() as c:
+        c.execute("UPDATE partners SET status = 'replied' WHERE id = ? AND status IN ('new','contacted','unresponsive')",
+                  (partner_id,))
+        c.execute("UPDATE partners SET followup_stage = 'none', followup_anchor_at = NULL WHERE id = ?",
+                  (partner_id,))
+    return mid
+
+
+def _hold_for_human(partner_id: int, partner, why: str, detail: str = "") -> None:
+    """Something went wrong generating a reply — park the chat in the
+    'Needs human intervention' queue and tell the team, instead of either
+    sending something broken or going silent unseen."""
+    with db.conn() as c:
+        c.execute("UPDATE partners SET needs_handover = 1 WHERE id = ?", (partner_id,))
+    _log_message(partner_id, "system", f"PC Agent held this chat for a human: {why}"
+                 + (f"\n{detail[:500]}" if detail else ""), simulated=True)
+    name = partner["name"] if partner else f"partner #{partner_id}"
+    _notify_pc_team(f"PC Agent needs you: {name}", f"{name} needs a human.\n\nReason: {why}\n\n{detail[:1500]}")
+    _notify_pc_team_whatsapp(f"PC Agent needs you: {name} — {why}")
+
+
+def _notify_partner_agreed(partner_id: int, how: str) -> None:
+    """Hot-lead alert with the full transcript. `how` says whether a human
+    clicked Mark Agreed or PC Agent detected the yes itself."""
+    with db.conn() as c:
+        partner = c.execute(
+            """SELECT p.*, wc.concept, wc.department FROM partners p
+               JOIN weekly_categories wc ON wc.id = p.weekly_category_id WHERE p.id = ?""",
+            (partner_id,)
+        ).fetchone()
+        msgs = c.execute("SELECT * FROM messages WHERE partner_id = ? ORDER BY id", (partner_id,)).fetchall()
+    if not partner:
+        return
+    names = {"kogul": "PC Agent", "partner": partner["name"], "human": "Kapruka (human)", "system": "SYSTEM"}
+    transcript = "\n".join(f"{names.get(m['sender'], m['sender'])}: {m['body']}" for m in msgs)
+    # 2026-10-14, user: "along with the time and name - it should send the email and whatsapp notification"
+    slot, contact = partner["call_slot"], partner["call_contact_name"]
+    call_line = (f"CALL BOOKED: {slot} (Sri Lanka time)" + (f", ask for {contact}" if contact else "")
+                 if slot else "No call time booked yet: please contact them to arrange one.")
+    _notify_pc_team(
+        f"HOT LEAD — call booked: {partner['name']}" + (f" — {slot}" if slot else ""),
+        f"{partner['name']} has agreed to join Partner Central ({how}).\n\n{call_line}\n\n"
+        f"Business: {partner['concept']} ({brain.department_label(partner['department'])})\n"
+        f"Phone: {partner['phone'] or '(none on file)'}\n\n--- Full conversation ---\n{transcript}\n"
+    )
+    _notify_pc_team_whatsapp(
+        f"HOT LEAD: {partner['name']} ({brain.department_label(partner['department'])}) wants to join "
+        f"Partner Central. {call_line}. Phone: {partner['phone'] or 'none on file'}"
+    )
 
 
 # 2026-10-14, user: "i want in settings to Partner Central team email and
@@ -1483,11 +2220,13 @@ _NOTIFY_RECIPIENTS_FALLBACK = ["shanaka@kapruka.com"]
 
 
 def _pc_team_emails() -> list[str]:
+    settings = db.get_settings()
     try:
-        emails = json.loads(db.get_settings().get("pc_team_emails") or "[]")
-        return [e for e in emails if e] or _NOTIFY_RECIPIENTS_FALLBACK
+        emails = [e.strip() for e in json.loads(settings.get("pc_team_emails") or "[]") if e and e.strip()]
     except Exception:
-        return _NOTIFY_RECIPIENTS_FALLBACK
+        emails = []
+    legacy = (settings.get("pc_team_email") or "").strip()
+    return emails or ([legacy] if legacy else _NOTIFY_RECIPIENTS_FALLBACK)
 
 
 def _pc_team_phones() -> list[str]:
@@ -1515,12 +2254,44 @@ def _notify_pc_team(subject: str, body: str) -> None:
     no-op (notify_email.send_email returns a clean failure dict, swallowed
     here)."""
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
         from _env import env as _mail_env
         import notify_email
         notify_email.send_email(_mail_env(), to=_pc_team_emails(), subject=subject, body=body)
     except Exception:
         pass  # fail-open — see docstring
+
+
+def _send_team_whatsapp(cfg: dict, to: str, text: str) -> dict:
+    """One WhatsApp alert to one PC-team number. {ok, how, error, note}.
+    With an alert template set, the alert text travels as the template's
+    {{1}} body variable (always delivered). Without one, plain text is sent;
+    Meta accepts it but only DELIVERS it if this number messaged the business
+    in the last 24h (error 131047 otherwise, reported later, not here)."""
+    import notify_whatsapp
+    settings = db.get_settings()
+    tmpl = (settings.get("wa_alert_template") or "").strip()
+    try:
+        if tmpl:
+            # template variables may not contain newlines, tabs or 4+ spaces
+            param = re.sub(r"\s{2,}", " ", re.sub(r"[\r\n\t]+", " | ", text)).strip()[:1000]
+            res = notify_whatsapp.send_template(
+                cfg, to, tmpl, (settings.get("wa_alert_template_lang") or "en_US").strip(),
+                components=[{"type": "body", "parameters": [{"type": "text", "text": param}]}])
+            how = f"template '{tmpl}'"
+        else:
+            res = notify_whatsapp.send_text(cfg, to, text)
+            how = "plain text"
+        if isinstance(res, dict) and res.get("error"):
+            return {"ok": False, "how": how, "error": res.get("message") or str(res.get("error"))}
+        mid = ((res or {}).get("messages") or [{}])[0].get("id")
+        if not mid:
+            return {"ok": False, "how": how, "error": "WhatsApp returned no message id"}
+        note = None if tmpl else ("Accepted by WhatsApp, but plain text is only delivered if this number has "
+                                  "messaged the business number in the last 24 hours. Set an alert template "
+                                  "(Settings → WhatsApp sending) for reliable alerts.")
+        return {"ok": True, "how": how, "error": None, "note": note}
+    except (Exception, SystemExit) as e:
+        return {"ok": False, "how": "template" if tmpl else "plain text", "error": str(e)[:300]}
 
 
 def _notify_pc_team_whatsapp(text: str) -> None:
@@ -1546,23 +2317,16 @@ def _notify_pc_team_whatsapp(text: str) -> None:
     if not phones:
         return
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
         from _env import env as _wa_env
         import notify_whatsapp
         cfg = _wa_env()
         for phone in phones:
-            # notify_whatsapp.send_text is written as a CLI-script function
-            # that calls sys.exit() on an HTTP/API failure (confirmed live
-            # in its source) — sys.exit() raises SystemExit, which a bare
-            # "except Exception" does NOT catch, so a single bad number
-            # would otherwise kill this request thread outright instead of
-            # just skipping that one recipient. Caught explicitly here.
-            try:
-                to = phone.strip().lstrip("+")
-                notify_whatsapp.send_template(cfg, to, "hello_world", "en_US")
-                notify_whatsapp.send_text(cfg, to, text)
-            except (Exception, SystemExit):
-                continue  # fail-open per recipient — see docstring
+            # 2026-10-14: the old "hello_world template, then text" fallback
+            # never worked — a business-sent template does not open the 24h
+            # window, so the text was dropped (user saw only hello_world).
+            r = _send_team_whatsapp(cfg, _to_wa_number(phone), text)
+            if not r["ok"]:
+                print(f"[team whatsapp] {phone}: {r['error']}", file=sys.stderr)  # fail-open per recipient
     except (Exception, SystemExit):
         pass  # fail-open — see docstring
 
@@ -1592,7 +2356,6 @@ def api_settings_test_notification():
 
     if emails:
         try:
-            sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
             from _env import env as _mail_env
             import notify_email
             cfg = _mail_env()
@@ -1605,28 +2368,15 @@ def api_settings_test_notification():
 
     if phones:
         try:
-            sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
             from _env import env as _wa_env
             import notify_whatsapp
             cfg = _wa_env()
             for phone in phones:
-                to = phone.lstrip("+")
-                try:
-                    opener = notify_whatsapp.send_template(cfg, to, "hello_world", "en_US")
-                    if opener.get("error"):
-                        results["phones"][phone] = {"ok": False, "error": opener.get("message")}
-                        continue
-                    sent = notify_whatsapp.send_text(cfg, to, text)
-                    mid = (sent.get("messages") or [{}])[0].get("id")
-                    results["phones"][phone] = {"ok": bool(mid), "error": None if mid else "no message id returned"}
-                except SystemExit as e:
-                    # send_text's CLI-script shape calls sys.exit() on an
-                    # HTTP/API failure — caught explicitly per-recipient so
-                    # one bad number doesn't abort testing the rest, and the
-                    # real error reaches the UI instead of a generic 500.
-                    results["phones"][phone] = {"ok": False, "error": str(e)}
-                except Exception as e:
-                    results["phones"][phone] = {"ok": False, "error": str(e)}
+                # same path a real alert takes (_send_team_whatsapp), so the
+                # test proves what production will do — incl. the honest note
+                # that plain text needs the recipient's 24h window
+                r = _send_team_whatsapp(cfg, _to_wa_number(phone), text)
+                results["phones"][phone] = {"ok": r["ok"], "error": r["error"], "note": r.get("note"), "how": r["how"]}
         except Exception as e:
             for phone in phones:
                 results["phones"].setdefault(phone, {"ok": False, "error": str(e)})
@@ -1649,7 +2399,14 @@ def api_partner_reply_from_partner(partner_id):
     """Simulated inbound — stands in for the not-yet-built WhatsApp webhook
     (user explicitly deferred webhook setup). Lets a human paste in what the
     partner actually said (e.g. read off a phone) so Kogul can react, or
-    lets this be used for manual testing of the conversation flow."""
+    lets this be used for manual testing of the conversation flow.
+
+    2026-10-14, user: not wanted for real partner chats. Refused while live
+    sending is on: real replies arrive via the WhatsApp webhook, and a pasted
+    one would be recorded as if the partner wrote it."""
+    if _wa_live():
+        return jsonify({"ok": False, "error": "Logging a partner reply is for simulation mode only. "
+                                              "In live mode the partner's real replies arrive automatically."}), 403
     if request.content_type and "multipart/form-data" in request.content_type:
         text = (request.form.get("text") or "").strip()
         files = request.files.getlist("files")
@@ -1667,39 +2424,36 @@ def api_partner_reply_from_partner(partner_id):
         in_atts = attachments.save_uploads(files) if files else []
     except attachments.AttachmentError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
-    _log_message(partner_id, "partner", text, simulated=True, atts=in_atts)
-    with db.conn() as c:
-        c.execute("UPDATE partners SET status = 'replied' WHERE id = ? AND status IN ('new','contacted')",
-                   (partner_id,))
-        # a real reply ends the no-response clock — otherwise the 24h
-        # follow-up scheduler would still nudge/switch-number later based on
-        # a last_message_at timestamp that's now stale.
-        c.execute("UPDATE partners SET followup_stage = 'none' WHERE id = ?", (partner_id,))
-    with db.conn() as c:
-        row = c.execute("SELECT human_takeover, needs_handover FROM partners WHERE id = ?", (partner_id,)).fetchone()
-    if row and row["human_takeover"]:
-        return jsonify({"ok": True, "auto_replied": False, "reason": "human_takeover is on"})
-    # 2026-10-06 fix: a real bug found live — "how do i join" after an
-    # earlier commission question had already set needs_handover kept
-    # getting auto-replied to anyway, because only human_takeover was ever
-    # checked here. needs_handover means the SAME thing as human_takeover in
-    # practice (a human needs to pick this up) but was never actually
-    # enforced — PC Agent kept chatting straight through its own handover
-    # flag. Stop here too; a human un-flags it via human_takeover toggle off
-    # (api_partner_human_takeover already clears needs_handover) once they've
-    # taken over, or by replying directly (api_partner_human_message).
-    if row and row["needs_handover"]:
-        return jsonify({"ok": True, "auto_replied": False, "reason": "needs_handover is on — waiting for a human"})
+    _record_partner_inbound(partner_id, text, simulated=True, atts=in_atts)
     result, status = _do_partner_auto_reply(partner_id, opening=False)
     return jsonify(result), status
 
 
+_PARTNER_REPLY_LOCKS: dict[int, threading.Lock] = {}
+_PARTNER_REPLY_LOCKS_GUARD = threading.Lock()
+
+
+def _partner_lock(partner_id: int) -> threading.Lock:
+    with _PARTNER_REPLY_LOCKS_GUARD:
+        return _PARTNER_REPLY_LOCKS.setdefault(partner_id, threading.Lock())
+
+
 def _do_partner_auto_reply(partner_id: int, opening: bool) -> tuple[dict, int]:
-    """Pure data version — returns (body_dict, http_status), never a Flask
-    response object, so it can be called from a background thread (no
-    active request context there) as well as from a route handler. Route
-    handlers wrap the result in jsonify() themselves; _run_category_approve
-    (automatic first-message on approve) calls this directly."""
+    """Generates PC Agent's next message for one partner and sends it via
+    _send_and_log. Returns (body_dict, http_status) — never a Flask response —
+    so it works from background threads too. Serialized per partner so a
+    burst of inbound messages, the scheduler and a button click can't
+    produce parallel replies.
+
+    opening=True writes a fresh opening message (used on approve, Start
+    outreach, and when switching to a second number) even if older messages
+    exist. body["auto_replied"] is True only when a partner-facing message
+    was produced."""
+    with _partner_lock(partner_id):
+        return _do_partner_auto_reply_locked(partner_id, opening)
+
+
+def _do_partner_auto_reply_locked(partner_id: int, opening: bool) -> tuple[dict, int]:
     with db.conn() as c:
         partner = c.execute(
             """SELECT p.*, wc.concept, wc.department, wc.source AS category_source,
@@ -1709,120 +2463,97 @@ def _do_partner_auto_reply(partner_id: int, opening: bool) -> tuple[dict, int]:
         ).fetchone()
         if not partner:
             return {"ok": False, "error": "unknown partner"}, 404
-        if partner["human_takeover"]:
-            return {"ok": False, "error": "human_takeover is on for this chat"}, 400
         msgs = c.execute("SELECT * FROM messages WHERE partner_id = ? ORDER BY id", (partner_id,)).fetchall()
+
+    blocked = _auto_reply_blocked(partner)
+    if blocked:
+        return {"ok": True, "auto_replied": False, "blocked": True, "reason": blocked}, 200
 
     settings = db.get_settings()
     conversation = [dict(m) for m in msgs]
-    # 2026-10-06: read any file/image the partner just sent (the LAST
-    # message, if it's theirs and carries attachments) so PC Agent can react
-    # to it, plus the shareables library it can attach FROM in its reply.
-    # run_openai_chat_text is single-turn text-only (see its docstring), so
-    # even though gpt-4o itself supports vision, an image here still goes
-    # through the same describe-as-text path as the Claude CLI chat — simpler
-    # and consistent than plumbing multi-part content through one call site
-    # and not the other.
+    prompt_conversation = [] if opening else conversation
     last_atts = attachments.loads(msgs[-1]["attachments"]) if msgs and msgs[-1]["sender"] == "partner" else []
-    attachments_block = attachments.describe_for_text_model(last_atts, caller=f"kogul.partner_reply_attachment:{partner_id}")
+    attachments_block = "" if opening else attachments.describe_for_text_model(
+        last_atts, caller=f"kogul.partner_reply_attachment:{partner_id}")
     shareables_block = attachments.shareables_prompt_block()
     prompt = brain.build_partner_reply_prompt(
-        partner["concept"], partner["department"], partner["name"], conversation,
+        partner["concept"], partner["department"], partner["name"], prompt_conversation,
         category_source=partner["category_source"], products_to_bring_in=partner["products_to_bring_in"],
         opening_message_template=settings.get("opening_message_template"),
         ecommerce_platform=partner["ecommerce_platform"],
-        attachments_block=attachments_block, shareables_block=shareables_block)
-    # 2026-10-04, user: "let kogul use open ai key to respond" — real
-    # outreach/partner-reply generation goes through OpenAI, NOT the Claude
-    # CLI (2026-10-06, user confirmed explicitly: "chat replies and outreach
-    # messages use OpenAI (gpt-4o) directly, not this [chat_model setting]"
-    # — only Chat with PC Agent uses the chat_model/Claude CLI path).
+        attachments_block=attachments_block, shareables_block=shareables_block,
+        partner_questions=_approved_partner_questions(partner_id),
+        known_facts=_known_facts_for_partner(partner_id))
+    # Real partner replies and outreach always use OpenAI gpt-4o; only Chat
+    # with PC Agent follows the chat_model setting (Claude CLI).
     try:
         raw_reply = run_openai_chat_text(prompt, model="gpt-4o", timeout=90, caller=f"kogul.partner_reply:{partner_id}")
     except Exception as e:
+        if not opening:
+            _hold_for_human(partner_id, partner, "PC Agent could not generate a reply (AI service error)", str(e))
         return {"ok": False, "error": f"PC Agent reply generation failed: {e}"}, 500
-
-    # strip any `ATTACH: <file>` line FIRST, so the HANDOVER:/NOT_AGREED:
-    # regexes below (which match reply.strip() as a whole) see the clean
-    # message text either way, regardless of whether a file was attached.
-    reply, out_atts = attachments.extract_attachments(raw_reply)
 
     with db.conn() as c:
         c.execute(
             "INSERT INTO token_usage (context, model, input_chars, output_chars, created_at) VALUES (?,?,?,?,?)",
-            (f"partner_reply:{partner_id}", "gpt-4o", len(prompt), len(reply), db.now())
+            (f"partner_reply:{partner_id}", "gpt-4o", len(prompt), len(raw_reply), db.now())
         )
 
-    # 2026-10-13, user: "for this send thema message sayign... once it hands
-    # over we cant message anymore" — HANDOVER now carries a second line,
-    # same two-line shape as NOT_AGREED: <reason> then PC Agent's actual
-    # closing message to the partner (told plainly a real team member takes
-    # over next, and that this is the last automated reply). Falls back to
-    # the old reason-only shape if the model ever omits the closing line.
-    handover_match = re.match(r"^HANDOVER:\s*(.+?)(?:\n(.+))?$", reply.strip(), re.IGNORECASE | re.DOTALL)
-    if handover_match:
-        reason = handover_match.group(1).strip()
-        closing_message = (handover_match.group(2) or "").strip()
+    decision = brain.parse_agent_output(raw_reply)
+    if not decision["ok"]:
+        _hold_for_human(partner_id, partner, f"PC Agent's reply could not be read safely ({decision['reason']})",
+                        f"Raw model output (NOT sent):\n{raw_reply}")
+        return {"ok": False, "error": "unreadable model output — held for a human", "held": True}, 200
+    decision = brain.guard_agreed_needs_slot(brain.guard_auto_reject(decision, conversation), conversation)
+    if decision.get("guarded"):
+        _log_message(partner_id, "system", f"Safety check: {decision['guarded']}", simulated=True)
+
+    action, reason = decision["action"], decision["reason"]
+    message, out_atts = attachments.extract_attachments(decision["message"])
+    send = _send_and_log(partner_id, "kogul", message, atts=out_atts) if message else {"ok": True, "sent": False}
+    delivered = bool(message) and send.get("ok")
+    base = {"ok": True, "auto_replied": bool(message), "message": message or None,
+            "sent": send.get("sent", False), "send_error": send.get("error"), "action": action}
+    if message and not send.get("ok"):
+        _hold_for_human(partner_id, partner, "PC Agent's message failed to send over WhatsApp", send.get("error") or "")
+
+    if action == "handover":
         with db.conn() as c:
             c.execute("UPDATE partners SET needs_handover = 1 WHERE id = ?", (partner_id,))
-        if closing_message:
-            _log_message(partner_id, "kogul", closing_message, simulated=True)
         _log_message(partner_id, "system", f"PC Agent requested human handover: {reason}", simulated=True)
-        # 2026-10-06, user: "if wat to know how human will be notified if
-        # someones is interesered or if theres a human takeover needed" —
-        # real email, not just the in-app badge (which only fires if the
-        # browser tab is open). Includes the last few turns so the team
-        # doesn't have to go find the chat first to know what's going on.
         recent = "\n".join(f"{m['sender']}: {m['body']}" for m in conversation[-6:])
         _notify_pc_team(
             f"PC Agent needs you: {partner['name']}",
-            f"{partner['name']} ({partner['concept']}, {partner['department']}) needs a human.\n\n"
+            f"{partner['name']} ({partner['concept']}, {brain.department_label(partner['department'])}) needs a human.\n\n"
             f"Reason: {reason}\n\nPhone: {partner['phone'] or '(none on file)'}\n\n"
             f"--- Last few messages ---\n{recent}\n"
         )
-        # 2026-10-14, user: "i want it both email and to whatsapp message as
-        # well" — real WhatsApp alert alongside the email above, same
-        # trigger, same recipients list (pc_team_phones).
         _notify_pc_team_whatsapp(
-            f"PC Agent needs you: {partner['name']} ({partner['department']}) — {reason}"
+            f"PC Agent needs you: {partner['name']} ({brain.department_label(partner['department'])}) — {reason}"
         )
-        return {"ok": True, "auto_replied": bool(closing_message), "handover": True,
-                "reason": reason, "message": closing_message or None}, 200
+        return {**base, "handover": True, "reason": reason}, 200
 
-    # 2026-10-05, user: "see still it says inprogress even after not
-    # interested" — KOGUL.md's own step 5 ("if a partner is not interested:
-    # logs why... closes politely") was never actually wired: not_agreed was
-    # manual-only (see api_partner_set_status's docstring, "once outcome
-    # logic is wired"), so a real "no" from a partner just looked identical
-    # to any other ordinary reply forever. brain.py's prompt now asks the
-    # model to prefix a genuine decline with NOT_AGREED: <reason> on its own
-    # line before the actual closing message it sends.
-    #
-    # 2026-10-13, user: "on first not interest message itself i want it not
-    # interest badge - it was in in progress" — brain.py's prompt now emits
-    # NOT_AGREED on the VERY FIRST decline, even before a reason is known
-    # (reason = "pending — asked why" in that case, with PC Agent's
-    # follow-up question as the reply, not a closing message), so the
-    # status/badge flips to not_agreed immediately instead of waiting for
-    # the reason round-trip. A second NOT_AGREED fires once the partner
-    # actually answers — this UPDATEs the same row's reason in place (status
-    # was already not_agreed, so this is just a reason correction, not a
-    # fresh transition), same as any other real reason ever would.
-    not_agreed_match = re.match(r"^NOT_AGREED:\s*(.+?)\n(.+)$", reply.strip(), re.IGNORECASE | re.DOTALL)
-    if not_agreed_match:
-        reason = not_agreed_match.group(1).strip()
-        closing_message = not_agreed_match.group(2).strip()
-        _log_message(partner_id, "kogul", closing_message, simulated=True)
+    if action == "agreed":
+        slot, contact = decision.get("call_slot") or "", decision.get("contact_name") or ""
+        with db.conn() as c:
+            c.execute("UPDATE partners SET status = 'agreed', pushed_to_pc_at = ?, not_agreed_reason = NULL, "
+                      "call_slot = ?, call_contact_name = ?, call_booked_at = ? WHERE id = ?",
+                      (db.now(), slot, contact or None, db.now(), partner_id))
+        _log_message(partner_id, "system", f"PC Agent booked a call with the Partner Central team: {slot}"
+                     + (f" (ask for {contact})" if contact else "") + " — pushed to the team.", simulated=True)
+        _notify_partner_agreed(partner_id, f"detected by PC Agent: {reason or 'said yes'}")
+        return {**base, "agreed": True, "reason": reason}, 200
+
+    if action == "not_agreed":
         with db.conn() as c:
             c.execute("UPDATE partners SET status = 'not_agreed', not_agreed_reason = ? WHERE id = ?",
-                       (reason, partner_id))
-        return {"ok": True, "auto_replied": True, "handover": False, "not_agreed": True,
-                "reason": reason, "message": closing_message}, 200
+                      (reason or "declined to give a reason", partner_id))
+        return {**base, "not_agreed": True, "reason": reason}, 200
 
-    _log_message(partner_id, "kogul", reply, simulated=True, atts=out_atts)
-    with db.conn() as c:
-        c.execute("UPDATE partners SET status = 'contacted' WHERE id = ? AND status = 'new'", (partner_id,))
-    return {"ok": True, "auto_replied": True, "handover": False, "message": reply}, 200
+    if delivered or not _wa_live():
+        with db.conn() as c:
+            c.execute("UPDATE partners SET status = 'contacted' WHERE id = ? AND status = 'new'", (partner_id,))
+    return {**base, "handover": False}, 200
 
 
 # ============================================================ Partner role-play
@@ -1840,14 +2571,7 @@ def api_simulations_list():
     return jsonify({"ok": True, "simulations": [dict(r) for r in rows]})
 
 
-_SIM_DEPARTMENT_LABELS = {
-    "grocery_fresh": "Grocery & Fresh Food", "clothing_fashion": "Clothing & Fashion",
-    "beauty_fragrance": "Beauty & Fragrance", "home_lifestyle": "Home & Lifestyle",
-    "jewellery": "Jewellery", "toys_kids": "Toys & Kids",
-    "sports_fitness": "Sports & Fitness", "electronics": "Electronics",
-    "books_stationery_cards": "Books, Stationery & Cards", "gift_sets_combos": "Gift Sets & Combos",
-    "pet": "Pet Supplies", "automobile": "Automobile", "other": "General",
-}
+_SIM_DEPARTMENT_LABELS = brain.DEPARTMENT_LABELS
 
 
 @app.route("/api/simulations", methods=["POST"])
@@ -2074,133 +2798,118 @@ def api_simulation_send(sim_id):
 
 
 def _run_simulation_reply(job_id: str, sim_id: int, new_msg_id: int | None = None) -> None:
-    """new_msg_id (2026-10-04 gap-audit fix — see api_simulation_send's
-    docstring): the partner-message row id inserted just before this job
-    started, if any. Deleted in the except-block on any failure here, so a
-    transient OpenAI error never leaves an orphaned message a retry would
-    duplicate."""
+    """Same prompt, model, parser and actions as a real partner reply
+    (_do_partner_auto_reply), against the simulation tables. new_msg_id: the
+    partner message inserted just before this job — deleted again if the AI
+    call fails, so a retry never duplicates it."""
+    def _add(sender: str, body: str, atts=None) -> None:
+        with db.conn() as c:
+            c.execute(
+                "INSERT INTO partner_simulation_messages (simulation_id, sender, body, created_at, attachments) "
+                "VALUES (?,?,?,?,?)", (sim_id, sender, body, db.now(), attachments.dumps(atts)))
+
+    def _done(**kw) -> None:
+        with _JOBS_LOCK:
+            _JOBS[job_id] = {"status": "done", "error": None, "handover": False, "message": None, **kw}
+
     try:
         with db.conn() as c:
             sim = c.execute("SELECT * FROM partner_simulations WHERE id = ?", (sim_id,)).fetchone()
             msgs = c.execute(
                 "SELECT * FROM partner_simulation_messages WHERE simulation_id = ? ORDER BY id", (sim_id,)
             ).fetchall()
+        if sim["needs_handover"] or sim["status"] == "agreed":
+            why = ("waiting for a human (handover requested)" if sim["needs_handover"]
+                   else "partner agreed — the Partner Central team owns this chat now")
+            _add("system", f"(PC Agent stays quiet here: {why}. A real partner would get no automatic reply.)")
+            _done(blocked=True, reason=why)
+            return
+
         settings = db.get_settings()
-        # partner_simulation_messages uses the same sender vocabulary
-        # build_partner_reply_prompt already expects ('kogul'/'partner'), so
-        # the row dicts pass straight through with no translation needed.
         conversation = [dict(m) for m in msgs]
         last_atts = attachments.loads(msgs[-1]["attachments"]) if msgs and msgs[-1]["sender"] == "partner" else []
         attachments_block = attachments.describe_for_text_model(last_atts, caller=f"kogul.simulation_attachment:{sim_id}")
         shareables_block = attachments.shareables_prompt_block()
+        # brand_discovery context: every real partner today comes from brand
+        # discovery, so the test must exercise that same prompt branch.
         prompt = brain.build_partner_reply_prompt(
-            sim["category"], sim["department"], sim["business_name"], conversation,
-            category_source=None, products_to_bring_in=None,
+            sim["business_name"], sim["department"], sim["business_name"], conversation,
+            category_source="brand_discovery", products_to_bring_in=None,
             opening_message_template=settings.get("opening_message_template"),
             attachments_block=attachments_block, shareables_block=shareables_block)
-        # 2026-10-06, user: "stimulate as partner only openai" — stays on
-        # OpenAI gpt-4o regardless of the chat_model setting (that setting
-        # now only drives Chat with PC Agent's Claude CLI model).
         raw_reply = run_openai_chat_text(prompt, model="gpt-4o", timeout=90, caller=f"kogul.simulation:{sim_id}")
-        reply, out_atts = attachments.extract_attachments(raw_reply)
         with db.conn() as c:
             c.execute(
                 "INSERT INTO token_usage (context, model, input_chars, output_chars, created_at) VALUES (?,?,?,?,?)",
-                (f"simulation:{sim_id}", "gpt-4o", len(prompt), len(reply), db.now())
+                (f"simulation:{sim_id}", "gpt-4o", len(prompt), len(raw_reply), db.now())
             )
-        # 2026-10-13: same two-line HANDOVER: <reason> / <closing message>
-        # shape as the real-partner path (see app_kogul.py's partner_reply
-        # handler) — the closing message is logged as its own "kogul"
-        # message FIRST (what the partner would actually receive), then the
-        # (...) system note, so Simulate-as-Partner shows the true last
-        # message a real partner would see before PC Agent goes silent.
-        handover_match = re.match(r"^HANDOVER:\s*(.+?)(?:\n(.+))?$", reply.strip(), re.IGNORECASE | re.DOTALL)
-        if handover_match:
-            reason = handover_match.group(1).strip()
-            closing_message = (handover_match.group(2) or "").strip()
-            note = f"(PC Agent would hand this off to a human here — reason: {reason})"
+
+        decision = brain.parse_agent_output(raw_reply)
+        if not decision["ok"]:
+            _add("system", f"(PC Agent's reply could not be read safely ({decision['reason']}) — a real chat "
+                           f"would be held for a human and nothing sent. Raw output: {raw_reply[:400]})")
             with db.conn() as c:
-                if closing_message:
-                    c.execute(
-                        "INSERT INTO partner_simulation_messages (simulation_id, sender, body, created_at) VALUES (?,?,?,?)",
-                        (sim_id, "kogul", closing_message, db.now())
-                    )
-                c.execute(
-                    "INSERT INTO partner_simulation_messages (simulation_id, sender, body, created_at) VALUES (?,?,?,?)",
-                    (sim_id, "kogul", note, db.now())
-                )
-                # 2026-10-05, user: "Make sure the chats status falls into
-                # one of these buckets" (the 5 real Dashboard tiles) — a
-                # handover is an overlay FLAG on top of status, same as
-                # partners.needs_handover, not its own status value; status
-                # stays 'contacted' (dashboard's "In progress" bucket) since
-                # the conversation is still actively being handled, just by
-                # a human instead of PC Agent now.
-                c.execute("UPDATE partner_simulations SET status = 'contacted', needs_handover = 1 WHERE id = ?", (sim_id,))
-            # 2026-10-13, user: "partner stimulation should be able to send
-            # human intervection notifcation in both scenarios" — brain.py's
-            # escalation rule routes BOTH "partner needs help" AND "partner
-            # clearly wants to proceed" through this same HANDOVER sentinel
-            # (there's no separate AGREED outcome in Simulate as Partner),
-            # so this one real email + WhatsApp alert covers both scenarios
-            # — same two real channels the real-partner handover path uses
-            # (see partner_reply's own HANDOVER branch above), just labelled
-            # as a simulation so the team isn't misled into thinking a real
-            # business reached out.
+                c.execute("UPDATE partner_simulations SET needs_handover = 1 WHERE id = ?", (sim_id,))
+            _done(held=True, reason=decision["reason"])
+            return
+        decision = brain.guard_agreed_needs_slot(brain.guard_auto_reject(decision, conversation), conversation)
+        if decision.get("guarded"):
+            _add("system", f"(Safety check: {decision['guarded']})")
+
+        action, reason = decision["action"], decision["reason"]
+        message, out_atts = attachments.extract_attachments(decision["message"])
+        if message:
+            _add("kogul", message, out_atts)
+        label = f"{sim['business_name']} ({brain.department_label(sim['department'])})"
+
+        if action == "handover":
+            _add("system", f"(PC Agent would hand this off to a human here — reason: {reason})")
+            with db.conn() as c:
+                c.execute("UPDATE partner_simulations SET status = CASE WHEN status = 'new' THEN 'contacted' "
+                          "ELSE status END, needs_handover = 1 WHERE id = ?", (sim_id,))
             _notify_pc_team(
                 f"[SIMULATION] PC Agent needs you: {sim['business_name']}",
                 f"[This is a Simulate-as-Partner test scenario, not a real business]\n\n"
-                f"{sim['business_name']} ({sim['category']}, {sim['department']}) needs a human.\n\n"
-                f"Reason: {reason}\n\n--- Conversation ---\n"
+                f"{label} needs a human.\n\nReason: {reason}\n\n--- Conversation ---\n"
                 + "\n".join(f"{m['sender']}: {m['body']}" for m in conversation[-6:]) + "\n"
             )
-            _notify_pc_team_whatsapp(
-                f"[SIMULATION] PC Agent needs you: {sim['business_name']} ({sim['department']}) — {reason}"
-            )
-            with _JOBS_LOCK:
-                _JOBS[job_id] = {"status": "done", "error": None, "handover": True, "reason": reason,
-                                  "message": closing_message or None}
+            _notify_pc_team_whatsapp(f"[SIMULATION] PC Agent needs you: {label} — {reason}")
+            _done(handover=True, reason=reason, message=message or None)
             return
 
-        # 2026-10-05, user: "see still it says inprogress even after not
-        # interested" — a simulated decline needs the same terminal status
-        # treatment as a real partner's not_agreed outcome (see brain.py's
-        # NOT_AGREED: output convention and _do_partner_auto_reply's mirror
-        # of this same check).
-        #
-        # 2026-10-13, user: "on first not interest message itself i want it
-        # not interest badge" — same immediate-flip fix as the real-partner
-        # path: brain.py now emits NOT_AGREED on the FIRST decline (reason
-        # may still be "pending — asked why"), so status flips right away
-        # instead of waiting for the reason round-trip.
-        not_agreed_match = re.match(r"^NOT_AGREED:\s*(.+?)\n(.+)$", reply.strip(), re.IGNORECASE | re.DOTALL)
-        if not_agreed_match:
-            closing_message = not_agreed_match.group(2).strip()
+        if action == "agreed":
+            slot, contact = decision.get("call_slot") or "", decision.get("contact_name") or ""
+            call_line = f"CALL BOOKED: {slot} (Sri Lanka time)" + (f", ask for {contact}" if contact else "")
+            _add("system", f"(PC Agent booked a call with the Partner Central team: {slot}"
+                           + (f", ask for {contact}" if contact else "") + ". A real chat is marked Agreed and "
+                           "pushed to the team with this time.)")
             with db.conn() as c:
-                c.execute(
-                    "INSERT INTO partner_simulation_messages (simulation_id, sender, body, created_at) VALUES (?,?,?,?)",
-                    (sim_id, "kogul", closing_message, db.now())
-                )
-                c.execute("UPDATE partner_simulations SET status = 'not_agreed' WHERE id = ?", (sim_id,))
-            with _JOBS_LOCK:
-                _JOBS[job_id] = {"status": "done", "error": None, "handover": False, "message": closing_message}
+                c.execute("UPDATE partner_simulations SET status = 'agreed', not_agreed_reason = NULL, call_slot = ?, "
+                          "call_contact_name = ?, call_booked_at = ? WHERE id = ?",
+                          (slot, contact or None, db.now(), sim_id))
+            _notify_pc_team(
+                f"[SIMULATION] HOT LEAD — call booked: {sim['business_name']} — {slot}",
+                f"[This is a Simulate-as-Partner test scenario, not a real business]\n\n"
+                f"{label} agreed to join Partner Central ({reason or 'said yes'}).\n\n{call_line}\n\n"
+                f"--- Conversation ---\n"
+                + "\n".join(f"{m['sender']}: {m['body']}" for m in conversation) + f"\nkogul: {message}\n"
+            )
+            _notify_pc_team_whatsapp(f"[SIMULATION] HOT LEAD: {label} agreed to join Partner Central. {call_line}")
+            _done(agreed=True, reason=reason, message=message)
+            return
+
+        if action == "not_agreed":
+            with db.conn() as c:
+                c.execute("UPDATE partner_simulations SET status = 'not_agreed', not_agreed_reason = ? WHERE id = ?",
+                          (reason or "declined to give a reason", sim_id))
+            _done(not_agreed=True, reason=reason, message=message)
             return
 
         with db.conn() as c:
-            c.execute(
-                "INSERT INTO partner_simulation_messages (simulation_id, sender, body, created_at, attachments) "
-                "VALUES (?,?,?,?,?)",
-                (sim_id, "kogul", reply, db.now(), attachments.dumps(out_atts))
-            )
-            c.execute("UPDATE partner_simulations SET status = 'contacted' WHERE id = ?", (sim_id,))
-        with _JOBS_LOCK:
-            _JOBS[job_id] = {"status": "done", "error": None, "handover": False, "message": reply}
+            c.execute("UPDATE partner_simulations SET status = 'contacted' WHERE id = ? AND status IN ('new','unresponsive')",
+                      (sim_id,))
+        _done(message=message)
     except Exception as e:
-        # 2026-10-05, user: "Make sure the chats status falls into one of
-        # these buckets" — a transient OpenAI/API failure isn't a real
-        # conversation outcome (not one of the 5 dashboard buckets), so
-        # status is left exactly as it was rather than claiming a false
-        # 'error' state; the just-sent message is rolled back same as before.
         if new_msg_id is not None:
             with db.conn() as c:
                 c.execute("DELETE FROM partner_simulation_messages WHERE id = ?", (new_msg_id,))
@@ -2213,6 +2922,150 @@ def api_simulation_poll(job_id):
     with _JOBS_LOCK:
         job = dict(_JOBS.get(job_id, {"status": "error", "error": "unknown job"}))
     return jsonify({"ok": True, **job})
+
+
+@app.route("/api/simulations/<int:sim_id>/retry", methods=["POST"])
+def api_simulation_retry(sim_id):
+    """2026-10-14 (PC team testing): re-generate one PC Agent reply after a
+    rule was added. Deletes that reply and everything after it, clears the
+    handover/outcome it may have caused, then runs the normal reply job —
+    which reads the rules fresh, so the tester sees the rule take effect."""
+    body = request.get_json(silent=True) or {}
+    msg_id = body.get("message_id")
+    with db.conn() as c:
+        msg = c.execute("SELECT id, sender FROM partner_simulation_messages WHERE id = ? AND simulation_id = ?",
+                        (msg_id, sim_id)).fetchone()
+        if not msg or msg["sender"] != "kogul":
+            return jsonify({"ok": False, "error": "pick a PC Agent message from this scenario"}), 400
+        c.execute("DELETE FROM partner_simulation_messages WHERE simulation_id = ? AND id >= ?", (sim_id, msg_id))
+        left = c.execute("SELECT COUNT(*) AS n FROM partner_simulation_messages WHERE simulation_id = ? "
+                         "AND sender = 'kogul'", (sim_id,)).fetchone()["n"]
+        c.execute("UPDATE partner_simulations SET needs_handover = 0, not_agreed_reason = NULL, status = ? "
+                  "WHERE id = ?", ("contacted" if left else "new", sim_id))
+    job_id = uuid.uuid4().hex
+    with _JOBS_LOCK:
+        _JOBS[job_id] = {"status": "running", "error": None}
+    threading.Thread(target=_run_simulation_reply, args=(job_id, sim_id, None), daemon=True).start()
+    return jsonify({"ok": True, "job_id": job_id})
+
+
+# ------------------------------------------------------------------ Team rules
+# 2026-10-14, user: the Partner Central team tests PC Agent in Simulate as
+# Partner and must be able to "add rules or define rules if any problem is
+# detected that will be automatically included". Rules live in agent_rules
+# and are appended to the brief in every prompt (brain.read_brief).
+
+_RULE_DRAFT_PROMPT = """You help the Kapruka Partner Central team correct PC Agent, a WhatsApp agent that
+invites Sri Lankan businesses to sell on Kapruka. A tester flagged one of its replies.
+
+Conversation up to and including the flagged reply:
+{convo}
+
+Flagged PC Agent reply:
+\"\"\"{flagged}\"\"\"
+
+What the tester says went wrong:
+\"\"\"{problem}\"\"\"
+
+Rules PC Agent already follows (do not repeat one of these):
+{existing}
+
+Write ONE rule that would stop this mistake in future chats with ANY business. It must be a
+general instruction, not about this test business by name. Plain English, imperative, under
+40 words. If an existing rule already covers it, still write the rule, and say which in "note";
+otherwise "note" is an empty string.
+
+Output ONLY JSON: {{"rule": "<the rule>", "note": ""}}"""
+
+
+@app.route("/api/rules")
+def api_rules_list():
+    with db.conn() as c:
+        rows = c.execute("SELECT r.*, s.business_name AS simulation_name FROM agent_rules r "
+                         "LEFT JOIN partner_simulations s ON s.id = r.simulation_id ORDER BY r.id DESC").fetchall()
+    return jsonify({"ok": True, "rules": [dict(r) for r in rows]})
+
+
+@app.route("/api/rules", methods=["POST"])
+def api_rules_create():
+    body = request.get_json(silent=True) or {}
+    rule = (body.get("rule") or "").strip()
+    if not rule:
+        return jsonify({"ok": False, "error": "the rule text is empty"}), 400
+    if len(rule) > 1000:
+        return jsonify({"ok": False, "error": "keep a rule under 1000 characters"}), 400
+    sim_id = body.get("simulation_id")
+    with db.conn() as c:
+        cur = c.execute(
+            "INSERT INTO agent_rules (rule, problem, flagged_reply, simulation_id, added_by, active, created_at) "
+            "VALUES (?,?,?,?,?,1,?)",
+            (rule, (body.get("problem") or "").strip() or None, (body.get("flagged_reply") or "").strip() or None,
+             int(sim_id) if sim_id else None, (body.get("added_by") or "").strip()[:80] or None, db.now()))
+    return jsonify({"ok": True, "id": cur.lastrowid})
+
+
+@app.route("/api/rules/<int:rule_id>", methods=["POST"])
+def api_rules_update(rule_id):
+    body = request.get_json(silent=True) or {}
+    sets, vals = [], []
+    if "rule" in body:
+        rule = (body.get("rule") or "").strip()
+        if not rule:
+            return jsonify({"ok": False, "error": "the rule text is empty"}), 400
+        sets.append("rule = ?"); vals.append(rule[:1000])
+    if "active" in body:
+        sets.append("active = ?"); vals.append(1 if body.get("active") else 0)
+    if not sets:
+        return jsonify({"ok": False, "error": "nothing to update"}), 400
+    sets.append("updated_at = ?"); vals.append(db.now())
+    with db.conn() as c:
+        cur = c.execute(f"UPDATE agent_rules SET {', '.join(sets)} WHERE id = ?", (*vals, rule_id))
+    if not cur.rowcount:
+        return jsonify({"ok": False, "error": "unknown rule"}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/api/rules/<int:rule_id>", methods=["DELETE"])
+def api_rules_delete(rule_id):
+    with db.conn() as c:
+        c.execute("DELETE FROM agent_rules WHERE id = ?", (rule_id,))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/rules/draft", methods=["POST"])
+def api_rules_draft():
+    """Drafts a rule from a flagged simulation reply + the tester's complaint.
+    Only a suggestion: the tester edits it before saving."""
+    body = request.get_json(silent=True) or {}
+    problem = (body.get("problem") or "").strip()
+    sim_id, msg_id = body.get("simulation_id"), body.get("message_id")
+    if not problem:
+        return jsonify({"ok": False, "error": "describe what went wrong first"}), 400
+    with db.conn() as c:
+        sim = c.execute("SELECT business_name FROM partner_simulations WHERE id = ?", (sim_id,)).fetchone()
+        msgs = c.execute("SELECT id, sender, body FROM partner_simulation_messages WHERE simulation_id = ? "
+                         "AND id <= ? ORDER BY id", (sim_id, msg_id)).fetchall()
+    if not sim or not msgs or msgs[-1]["id"] != msg_id or msgs[-1]["sender"] != "kogul":
+        return jsonify({"ok": False, "error": "flagged message not found"}), 404
+    who = {"kogul": "PC Agent", "partner": "Business", "system": "SYSTEM NOTE"}
+    convo = "\n".join(f"{who.get(m['sender'], m['sender'])}: {m['body']}" for m in msgs[-12:])
+    existing = "\n".join(f"- {r['rule']}" for r in brain.active_team_rules()) or "(none yet)"
+    prompt = _RULE_DRAFT_PROMPT.format(convo=convo, flagged=msgs[-1]["body"], problem=problem, existing=existing)
+    try:
+        raw = run_openai_chat_text(prompt, model="gpt-4o", timeout=60, caller=f"kogul.rule_draft:{sim_id}")
+        from claude_cli import extract_json
+        data = extract_json(raw)
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        rule = (data.get("rule") or "").strip()
+        if not rule:
+            raise ValueError("empty draft")
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"could not draft a rule ({e}) - write it yourself"}), 502
+    note = (data.get("note") or "").strip()
+    if note.lower().strip(".") in ("empty", "none", "n/a", "-"):
+        note = ""
+    return jsonify({"ok": True, "rule": rule, "note": note})
 
 
 @app.route("/api/partners/<int:partner_id>/human_message", methods=["POST"])
@@ -2236,10 +3089,15 @@ def api_partner_human_message(partner_id):
         out_atts = attachments.save_uploads(files) if files else []
     except attachments.AttachmentError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
-    _log_message(partner_id, "human", text, simulated=True, atts=out_atts)
+    send = _send_and_log(partner_id, "human", text, atts=out_atts)
+    if not send.get("ok"):
+        # nothing reached the partner — keep the chat in the human queue
+        return jsonify({"ok": False, "error": f"Not delivered: {send.get('error')}"}), 502
+    # A human replying now owns the chat: takeover on (PC Agent stays quiet
+    # until someone hands it back), and it leaves the "needs a human" queue.
     with db.conn() as c:
-        c.execute("UPDATE partners SET needs_handover = 0 WHERE id = ?", (partner_id,))
-    return jsonify({"ok": True})
+        c.execute("UPDATE partners SET needs_handover = 0, human_takeover = 1 WHERE id = ?", (partner_id,))
+    return jsonify({"ok": True, "sent": send.get("sent", False), "simulated": send.get("simulated", False)})
 
 
 @app.route("/api/partners/<int:partner_id>/takeover", methods=["POST"])
@@ -2286,51 +3144,13 @@ def api_partner_set_status(partner_id):
                        (status, reason, partner_id))
         else:
             c.execute("UPDATE partners SET status = ? WHERE id = ?", (status, partner_id))
-    # 2026-10-06 fix: a real bug, confirmed live ("database is locked") —
-    # _log_message opens its OWN db.conn() internally, so calling it from
-    # inside the UPDATE's own `with db.conn() as c:` block meant two
-    # connections both holding a write lock in the same process at once.
-    # SQLite's default locking can't resolve that from a single process, so
-    # every "mark agreed" call 500'd. Moved outside the block, after the
-    # UPDATE's own connection has already closed/committed.
+    # _log_message opens its own connection — kept outside the UPDATE's block
+    # above (two write connections at once = "database is locked").
     if status == "agreed":
         _log_message(partner_id, "system",
-                      "Marked AGREED — conversation pushed to the Partner Central team email.",
+                      "Marked AGREED — conversation pushed to the Partner Central team.",
                       simulated=True)
-
-    if status == "agreed":
-        # 2026-10-06 fix: this used to just SAY "pushed to the Partner
-        # Central team email" without ever actually sending one — see
-        # _notify_pc_team's docstring. Real email now, with the full
-        # transcript so the team can pick up the conversation with full
-        # context instead of starting cold.
-        with db.conn() as c:
-            partner = c.execute(
-                """SELECT p.*, wc.concept, wc.department FROM partners p
-                   JOIN weekly_categories wc ON wc.id = p.weekly_category_id WHERE p.id = ?""",
-                (partner_id,)
-            ).fetchone()
-            msgs = c.execute("SELECT * FROM messages WHERE partner_id = ? ORDER BY id", (partner_id,)).fetchall()
-        if partner:
-            transcript_lines = []
-            for m in msgs:
-                who = {"kogul": "PC Agent", "partner": partner["name"], "human": "Kapruka (human)",
-                       "system": "SYSTEM"}.get(m["sender"], m["sender"])
-                transcript_lines.append(f"{who}: {m['body']}")
-            transcript = "\n".join(transcript_lines)
-            body_text = (
-                f"{partner['name']} has agreed to join Partner Central.\n\n"
-                f"Category: {partner['concept']} ({partner['department']})\n"
-                f"Phone: {partner['phone'] or '(none on file)'}\n\n"
-                f"--- Full conversation ---\n{transcript}\n"
-            )
-            _notify_pc_team(f"Partner agreed: {partner['name']}", body_text)
-            # 2026-10-14, user: "i want it both email and to whatsapp
-            # message as well" — same trigger, real WhatsApp alert alongside
-            # the email above.
-            _notify_pc_team_whatsapp(
-                f"{partner['name']} ({partner['department']}) agreed to join Partner Central!"
-            )
+        _notify_partner_agreed(partner_id, "marked by a team member")
     return jsonify({"ok": True})
 
 
@@ -2339,7 +3159,17 @@ def api_partner_set_status(partner_id):
 @app.route("/api/settings")
 def api_settings():
     settings = db.get_settings()
-    return jsonify({"ok": True, "settings": settings, "kogul_md": brain.read_kogul_md()})
+    cfg = _project_env()
+    effective = {
+        "emails": _pc_team_emails(),
+        "emails_are_fallback": _pc_team_emails() == _NOTIFY_RECIPIENTS_FALLBACK,
+        "phones": _pc_team_phones(),
+        "whatsapp_live": settings.get("whatsapp_live") == "1",
+        "webhook_signature_ready": bool(cfg.get("META_APP_SECRET")),
+        "webhook_verify_token_set": bool(cfg.get("WA_WEBHOOK_VERIFY_TOKEN")),
+        "remote_login_set": bool(os.environ.get("KOGUL_ADMIN_PASSWORD") or cfg.get("KOGUL_ADMIN_PASSWORD")),
+    }
+    return jsonify({"ok": True, "settings": settings, "kogul_md": brain.read_kogul_md(), "effective": effective})
 
 
 @app.route("/api/settings/update", methods=["POST"])
@@ -2350,13 +3180,19 @@ def api_settings_update():
     changed in the script'."""
     body = request.get_json(silent=True) or {}
     allowed = {"num_categories_per_week", "partners_per_category", "claude_model", "chat_model",
-               "follow_up_days", "pc_team_email", "opening_message_template", "wa_template_cost_usd",
-               "pc_team_emails", "pc_team_phones"}
+               "pc_team_email", "opening_message_template", "wa_template_cost_usd",
+               "pc_team_emails", "pc_team_phones", "whatsapp_live", "wa_outreach_template",
+               "wa_outreach_template_lang", "brief_questions", "wa_alert_template", "wa_alert_template_lang"}
+    if "whatsapp_live" in body:
+        body["whatsapp_live"] = "1" if str(body["whatsapp_live"]).lower() in ("1", "true", "on") else "0"
     updated = {}
     for k, v in body.items():
         if k not in allowed or v is None:
             continue
-        if k in ("pc_team_emails", "pc_team_phones"):
+        if k == "brief_questions":
+            items = [str(x).strip() for x in (v if isinstance(v, list) else str(v).splitlines()) if str(x).strip()]
+            v = json.dumps(items[:12])
+        elif k in ("pc_team_emails", "pc_team_phones"):
             # v arrives as a JSON-serializable list from the frontend (up to
             # 3 entries, user: "we can add upto 3 email and 3 numbers") —
             # trim blanks and cap at 3 server-side too, never trust the
@@ -2410,7 +3246,6 @@ def api_settings_token_usage():
 # this endpoint filters the project-wide summary down to just those.
 @app.route("/api/costs")
 def api_costs():
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
     import openai_cost_tracker
     full_summary = openai_cost_tracker.summary()
     by_caller = {k: v for k, v in (full_summary.get("by_caller") or {}).items() if k.startswith("kogul.")}
@@ -2499,7 +3334,6 @@ def api_whatsapp_send_test():
     TEMPLATE_NAME = "hello_world"
     TEMPLATE_LANG = "en_US"
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
     from _env import env as _wa_env
     import notify_whatsapp
 
@@ -2540,42 +3374,31 @@ def api_whatsapp_test_sends():
 
 
 # ------------------------------------------------------------- WhatsApp webhook
-# 2026-10-13, user: "now i have to setup the webhook" — the real inbound
-# half of WhatsApp, deliberately deferred since the project started (see
-# module docstring: "dont worry about the webhook and all just build the
-# front end for end and backend"). Reuses the EXACT same reply-generation
-# path real partner chats already use (_do_partner_auto_reply / the
-# reply_from_partner status-update logic) rather than a parallel pipeline,
-# so a webhook-driven conversation behaves identically to one driven through
-# the Partner Chats UI — same handover/not_agreed/takeover rules, same
-# prompt. The one real difference, confirmed via AskUserQuestion ("also go
-# real"): PC Agent's reply is now ALSO sent for real over the WhatsApp Cloud
-# API, not just logged — _log_message's own simulated=True calls inside
-# _do_partner_auto_reply are left untouched (so every OTHER caller of that
-# function — category-approve auto-opening, the manual "Start outreach"
-# button, Simulate as Partner — keeps behaving exactly as before); this
-# route sends the returned reply text itself as a separate, explicit step.
+# Real inbound WhatsApp. Uses the same _record_partner_inbound +
+# _do_partner_auto_reply path as the Partner Chats "partner replied" box, so
+# every gate (takeover, handover, agreed) and status rule is identical. The
+# reply goes out through _send_and_log, i.e. really sent only when the
+# whatsapp_live setting is on.
 def _normalize_wa_phone(raw: str) -> str:
     return re.sub(r"[^\d]", "", raw or "").lstrip("0") if raw else ""
 
 
 def _find_partner_by_phone(phone_digits: str) -> int | None:
-    """Matches an inbound WhatsApp sender number to a real partners row.
-    Numbers aren't guaranteed to be stored in one consistent format
-    (phone/phone_2 may carry a leading '+', spaces, or a leading '0'), so
-    both sides are normalized to bare trailing digits before comparing —
-    matches on the last 9 digits (enough to be a real local number, short
-    enough to survive a country-code or leading-zero mismatch either side)."""
+    """Matches an inbound sender to a partner on the last 9 digits of phone,
+    phone_2 or phone_prev (the number we switched away from). If the same
+    number belongs to several rows, the most recently active open chat wins."""
     if len(phone_digits) < 9:
         return None
     tail = phone_digits[-9:]
     with db.conn() as c:
         rows = c.execute(
-            "SELECT id, phone, phone_2 FROM partners WHERE status != 'removed' "
-            "AND (phone IS NOT NULL OR phone_2 IS NOT NULL)"
+            "SELECT id, phone, phone_2, phone_prev, status FROM partners WHERE status != 'removed' "
+            "AND (phone IS NOT NULL OR phone_2 IS NOT NULL OR phone_prev IS NOT NULL) "
+            "ORDER BY CASE WHEN status IN ('agreed','not_agreed') THEN 1 ELSE 0 END, "
+            "COALESCE(last_message_at, created_at) DESC, id DESC"
         ).fetchall()
     for r in rows:
-        for stored in (r["phone"], r["phone_2"]):
+        for stored in (r["phone"], r["phone_2"], r["phone_prev"]):
             if stored and _normalize_wa_phone(stored)[-9:] == tail:
                 return r["id"]
     return None
@@ -2583,17 +3406,9 @@ def _find_partner_by_phone(phone_digits: str) -> int | None:
 
 @app.route("/webhook/whatsapp", methods=["GET"])
 def api_whatsapp_webhook_verify():
-    """Meta's one-time verification handshake, run when the callback URL is
-    first registered (or re-verified) in the Meta App Dashboard. Meta sends
-    hub.mode=subscribe, hub.verify_token (must match WA_WEBHOOK_VERIFY_TOKEN
-    in .env — generated for this project, given to the user to paste into
-    the Dashboard), and hub.challenge (echoed back verbatim as plain text on
-    a match, which is how Meta confirms this endpoint is really the owner's)."""
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-    from _env import env as _wa_env
-    cfg = _wa_env()
-    verify_token = cfg.get("WA_WEBHOOK_VERIFY_TOKEN") or ""
-
+    """Meta's verification handshake when the callback URL is registered:
+    echo hub.challenge only if hub.verify_token matches WA_WEBHOOK_VERIFY_TOKEN."""
+    verify_token = _project_env().get("WA_WEBHOOK_VERIFY_TOKEN") or ""
     mode = request.args.get("hub.mode", "")
     token = request.args.get("hub.verify_token", "")
     challenge = request.args.get("hub.challenge", "")
@@ -2604,115 +3419,131 @@ def api_whatsapp_webhook_verify():
 
 @app.route("/webhook/whatsapp", methods=["POST"])
 def api_whatsapp_webhook_receive():
-    """Real inbound WhatsApp messages land here. Verifies the request is
-    genuinely from Meta (X-Hub-Signature-256, HMAC-SHA256 over the raw body
-    using META_APP_SECRET) before trusting anything in it — webhook URLs are
-    public, so anything short of signature verification would let anyone who
-    finds this URL inject fake "partner replies" straight into real
-    conversations. Fails CLOSED on a bad/missing signature (403), not open —
-    unlike the fail-open discipline elsewhere in this app, a spoofable
-    inbound endpoint is a real security gap, not just a feature degrading
-    gracefully.
+    """Real inbound WhatsApp traffic. Fails CLOSED: without META_APP_SECRET,
+    or with a bad X-Hub-Signature-256, nothing is processed (403) — this URL
+    is public, so an unsigned request could otherwise inject fake partner
+    messages and trigger real replies.
 
-    Always returns 200 to Meta quickly (even on an internal error) once the
-    signature itself checks out — Meta retries/disables a webhook that
-    doesn't return 200, so a transient downstream failure (e.g. OpenAI
-    timeout) is logged and swallowed here rather than surfaced as a webhook
-    failure Meta would act on."""
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-    from _env import env as _wa_env
-    import notify_whatsapp
-    cfg = _wa_env()
-
+    Returns 200 immediately; message handling runs in a background thread,
+    because Meta re-delivers any webhook that is slow to answer. Each message
+    id is recorded first, so a re-delivery is ignored."""
+    import hashlib
+    import hmac
+    cfg = _project_env()
     app_secret = cfg.get("META_APP_SECRET") or ""
+    if not app_secret:
+        print("[whatsapp webhook] META_APP_SECRET not set — request refused", file=sys.stderr)
+        return jsonify({"ok": False, "error": "webhook signature secret not configured"}), 403
     raw_body = request.get_data()
-    if app_secret:
-        import hashlib
-        import hmac
-        signature = request.headers.get("X-Hub-Signature-256", "")
-        expected = "sha256=" + hmac.new(app_secret.encode(), raw_body, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(signature, expected):
-            return jsonify({"ok": False, "error": "invalid signature"}), 403
-    else:
-        # META_APP_SECRET not set yet (placeholder left empty in .env until
-        # pulled from the Meta App Dashboard) — logged so this gap is visible
-        # rather than silently accepting unsigned requests forever.
-        print("[whatsapp webhook] WARNING: META_APP_SECRET not set — skipping signature verification", file=sys.stderr)
+    signature = request.headers.get("X-Hub-Signature-256", "")
+    expected = "sha256=" + hmac.new(app_secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return jsonify({"ok": False, "error": "invalid signature"}), 403
 
-    payload = request.get_json(silent=True) or {}
     try:
-        entries = payload.get("entry") or []
-        for entry in entries:
-            for change in (entry.get("changes") or []):
+        payload = json.loads(raw_body or b"{}")
+    except ValueError:
+        return jsonify({"ok": True}), 200
+    try:
+        for entry in payload.get("entry") or []:
+            for change in entry.get("changes") or []:
                 value = change.get("value") or {}
-                for msg in (value.get("messages") or []):
-                    _handle_inbound_whatsapp_message(msg, value, cfg, notify_whatsapp)
-                # delivery/read status callbacks (value.get("statuses")) carry
-                # no partner-facing content — intentionally ignored, nothing
-                # in this app's schema tracks per-message delivery state.
+                for st in value.get("statuses") or []:
+                    _apply_wa_status(st)
+                for msg in value.get("messages") or []:
+                    msg_id = msg.get("id")
+                    if msg_id:
+                        with db.conn() as c:
+                            fresh = c.execute("INSERT OR IGNORE INTO wa_inbound (msg_id, received_at) VALUES (?,?)",
+                                              (msg_id, db.now())).rowcount
+                        if not fresh:
+                            continue  # Meta re-delivery — already handled
+                    threading.Thread(target=_handle_inbound_whatsapp_message, args=(msg, value), daemon=True).start()
     except Exception as e:
         print(f"[whatsapp webhook] error processing payload: {e}", file=sys.stderr)
     return jsonify({"ok": True}), 200
 
 
-def _handle_inbound_whatsapp_message(msg: dict, value: dict, cfg: dict, notify_whatsapp) -> None:
-    """One real inbound message -> matched to a partner -> logged via the
-    same reply_from_partner-shaped update, auto-replied via the same
-    _do_partner_auto_reply the UI uses, then that reply is ACTUALLY SENT
-    back over WhatsApp (the one real-vs-simulated difference from every
-    other caller of that function — see this section's header comment).
-    Fails open per message: one bad/unmatched message is logged and skipped,
-    never crashes the whole webhook request."""
-    from_number = msg.get("from") or ""
-    msg_type = msg.get("type")
-    if msg_type == "text":
-        text = (msg.get("text") or {}).get("body", "").strip()
-    else:
-        # Non-text inbound (image/document/audio/etc) — the body-less types
-        # this app's attachments pipeline isn't wired to ingest from a real
-        # WhatsApp webhook yet (attachments.save_uploads expects a Flask
-        # FileStorage, not a WhatsApp media-id); acknowledged with a short
-        # placeholder so the conversation isn't silently missing a turn,
-        # rather than silently dropped.
-        text = f"[{msg_type} message received — not yet processed]"
-    if not text:
+def _apply_wa_status(st: dict) -> None:
+    """Delivery receipts: sent → delivered → read, or failed with Meta's reason."""
+    wa_id, status = st.get("id"), st.get("status")
+    if not wa_id or status not in ("sent", "delivered", "read", "failed"):
         return
-
-    phone_digits = _normalize_wa_phone(from_number)
-    partner_id = _find_partner_by_phone(phone_digits)
-    if not partner_id:
-        print(f"[whatsapp webhook] inbound from unknown number {from_number!r} — no matching partner, ignored",
-              file=sys.stderr)
-        return
-
+    err = None
+    if status == "failed":
+        errs = st.get("errors") or [{}]
+        err = f"{errs[0].get('code')}: {errs[0].get('title') or errs[0].get('message') or 'delivery failed'}"
+    rank = {"sent": 1, "delivered": 2, "read": 3, "failed": 4}
     with db.conn() as c:
-        p = c.execute("SELECT status, human_takeover FROM partners WHERE id = ?", (partner_id,)).fetchone()
-    if not p:
-        return
+        row = c.execute("SELECT id, partner_id, send_status FROM messages WHERE wa_message_id = ?", (wa_id,)).fetchone()
+        if not row or rank.get(row["send_status"] or "", 0) >= rank[status]:
+            return
+        c.execute("UPDATE messages SET send_status = ?, send_error = COALESCE(?, send_error) WHERE id = ?",
+                  (status, err, row["id"]))
+    if status == "failed":
+        _log_message(row["partner_id"], "system", f"WhatsApp reported a message as NOT delivered — {err}",
+                     simulated=True)
 
-    _log_message(partner_id, "partner", text, simulated=False)
-    with db.conn() as c:
-        c.execute("UPDATE partners SET status = 'replied' WHERE id = ? AND status IN ('new','contacted')",
-                   (partner_id,))
-        c.execute("UPDATE partners SET followup_stage = 'none' WHERE id = ?", (partner_id,))
 
-    if p["human_takeover"]:
-        return  # a human already owns this conversation — PC Agent stays quiet
+_INBOUND_DEBOUNCE_SECONDS = 4
+_ANSWERED_UP_TO: dict[int, int] = {}  # partner_id -> highest partner message id already answered
+_UNKNOWN_SENDER_ALERTED: dict[str, float] = {}
 
-    result, status = _do_partner_auto_reply(partner_id, opening=False)
-    reply_text = result.get("message") if status == 200 else None
-    if not reply_text:
-        return  # generation failed, or this turn produced no partner-facing reply (shouldn't happen, fails open)
+_MEDIA_TYPES = {"image", "document", "audio", "video", "sticker", "location", "contacts"}
 
-    to = phone_digits.lstrip("+") or from_number
+
+def _inbound_text(msg: dict) -> str | None:
+    """Readable text for one inbound message, or None if it should be ignored
+    entirely (reactions, read-only system events, unsupported types)."""
+    t = msg.get("type")
+    if t == "text":
+        return ((msg.get("text") or {}).get("body") or "").strip() or None
+    if t == "button":
+        return ((msg.get("button") or {}).get("text") or "").strip() or None
+    if t == "interactive":
+        inter = msg.get("interactive") or {}
+        picked = inter.get("button_reply") or inter.get("list_reply") or {}
+        return (picked.get("title") or "").strip() or None
+    if t in _MEDIA_TYPES:
+        caption = ((msg.get(t) or {}).get("caption") or "").strip()
+        note = f"[Partner sent a {t} — PC Agent can't open it yet; ask them to describe it in text if needed]"
+        return f"{caption}\n{note}" if caption else note
+    return None  # reaction, system, unsupported, etc.
+
+
+def _handle_inbound_whatsapp_message(msg: dict, value: dict) -> None:
+    """One real inbound message: match → log → (after a short debounce, under
+    the partner's lock) reply once for everything not yet answered."""
     try:
-        notify_whatsapp.send_text(cfg, to, reply_text)
-    except (Exception, SystemExit) as e:
-        # the reply is already logged (simulated=True, inside
-        # _do_partner_auto_reply) even if the real send fails — a failed
-        # WhatsApp API call never loses the conversation's own record of
-        # what PC Agent decided to say.
-        print(f"[whatsapp webhook] real send to {to} failed: {e}", file=sys.stderr)
+        text = _inbound_text(msg)
+        if not text:
+            return
+        from_number = msg.get("from") or ""
+        partner_id = _find_partner_by_phone(_normalize_wa_phone(from_number))
+        if not partner_id:
+            last = _UNKNOWN_SENDER_ALERTED.get(from_number, 0)
+            if time.time() - last > 3600:
+                _UNKNOWN_SENDER_ALERTED[from_number] = time.time()
+                name = (((value.get("contacts") or [{}])[0].get("profile") or {}).get("name")) or "unknown"
+                _notify_pc_team(f"PC Agent: WhatsApp from an unknown number ({from_number})",
+                                f"A message arrived from +{from_number} (WhatsApp name: {name}), which doesn't "
+                                f"match any partner, so PC Agent did not reply.\n\nMessage:\n{text}\n")
+            print(f"[whatsapp webhook] inbound from unknown number {from_number!r} — no matching partner",
+                  file=sys.stderr)
+            return
+
+        my_msg_id = _record_partner_inbound(partner_id, text, simulated=False, wa_message_id=msg.get("id"))
+        time.sleep(_INBOUND_DEBOUNCE_SECONDS)
+        with _partner_lock(partner_id):
+            if _ANSWERED_UP_TO.get(partner_id, 0) >= my_msg_id:
+                return  # an earlier thread already replied to this message as part of a burst
+            with db.conn() as c:
+                newest = c.execute("SELECT MAX(id) AS m FROM messages WHERE partner_id = ? AND sender = 'partner'",
+                                   (partner_id,)).fetchone()["m"] or my_msg_id
+            _ANSWERED_UP_TO[partner_id] = newest
+            _do_partner_auto_reply_locked(partner_id, opening=False)
+    except Exception as e:
+        print(f"[whatsapp webhook] failed handling inbound message: {e}", file=sys.stderr)
 
 
 # --------------------------------------------------------------- attachments
@@ -2780,13 +3611,25 @@ def api_shareables_get(name):
 # VPS's background Start-Process — no external supervisor/Task Scheduler
 # needed. The password is intentionally a simple fixed PIN, not a real auth
 # system — this restarts a process, it doesn't expose any data.
-_RESTART_PASSWORD = "1111"
+_RESTART_PIN_LOCAL_DEFAULT = "1111"  # only accepted from this machine itself
+_RESTART_FAILURES: list[float] = []
 
 
 @app.route("/api/server/restart", methods=["POST"])
 def api_server_restart():
+    import hmac
     body = request.get_json(silent=True) or {}
-    if (body.get("password") or "") != _RESTART_PASSWORD:
+    now = time.time()
+    _RESTART_FAILURES[:] = [t for t in _RESTART_FAILURES if now - t < 600]
+    if len(_RESTART_FAILURES) >= 5:
+        return jsonify({"ok": False, "error": "too many wrong attempts — wait 10 minutes"}), 429
+    pin = os.environ.get("KOGUL_RESTART_PIN") or _project_env().get("KOGUL_RESTART_PIN") or ""
+    if not pin:
+        if not _is_local_request():
+            return jsonify({"ok": False, "error": "remote restart is disabled until KOGUL_RESTART_PIN is set in .env"}), 403
+        pin = _RESTART_PIN_LOCAL_DEFAULT
+    if not hmac.compare_digest(str(body.get("password") or "").encode(), pin.encode()):
+        _RESTART_FAILURES.append(now)
         return jsonify({"ok": False, "error": "wrong password"}), 403
 
     def _delayed_restart():
@@ -2837,7 +3680,8 @@ def api_server_restart():
 # maybe on 20th hour" + "if more than one number is available send first
 # number no response after 24 send the second number". Agreed design (via
 # AskUserQuestion): ONE thread per business, two-stage escalation —
-#   hour 20: one polite same-number nudge (followup_stage 'none' -> 'nudged')
+#   hour 20: one polite same-number nudge (followup_stage 'none' -> 'nudged',
+#            or 'nudge_skipped' — 2026-10-14: only when stalled midway, see _nudge_decision)
 #   hour 24+: if a second number exists, "switch" to it — resend the opening
 #             there and restart the clock (-> 'switched_number').
 # 2026-10-13, user: "in progress - if its still chatting and if it falls
@@ -2846,28 +3690,16 @@ def api_server_restart():
 # no reply after 3 dasy - then unresponsive". The 20h nudge is UNCHANGED;
 # only the final "mark unresponsive" mark moved from 24h to 72h (3 days) —
 # on a single-number partner this is simply a longer wait after the nudge;
-# on a two-number partner, 24h still triggers the switch-to-second-number
-# escalation as before, and 72h (now measured from THAT switch's own
-# last_message_at reset) is the final unresponsive mark if the second
-# number never replies either.
-# Everything here follows the same simulated=1 convention as the rest of the
-# real-partner pipeline (see module docstring: WhatsApp sending to real
-# partners is not wired up yet, by deliberate decision) — this logs what PC
-# Agent would send, it does not call the WhatsApp API. A partner whose
-# `human_takeover` is on, or who already has `needs_handover`, is left alone
-# — a human already owns that conversation.
-_FOLLOWUP_NUDGE_HOURS = 20
+# on a two-number partner, 24h triggers the switch-to-second-number
+# escalation, and 72h measured from the switch is the final unresponsive
+# mark. All timers run from the start of the unanswered wait (see
+# _wait_anchor) — a nudge does not restart them. Messages go out through
+# _send_and_log (real only in live mode). A partner whose `human_takeover`
+# is on, or who has `needs_handover`, is left alone.
+_FOLLOWUP_NUDGE_HOURS = 20  # after the PARTNER's last message, only while the 24h window is open
 _FOLLOWUP_SWITCH_HOURS = 24
 _FOLLOWUP_UNRESPONSIVE_HOURS = 72  # 3 days — user: "if 3 days no reply push it unresponsive"
-_FOLLOWUP_POLL_SECONDS = 600  # 10 minutes — frequent enough that the 20h/24h/
-                               # 72h marks are hit within minutes, cheap enough
-                               # to run forever in the background
-
-_FOLLOWUP_NUDGE_TEXT = (
-    "Hi, just following up — still happy to answer any questions about "
-    "Partner Central whenever you get a chance."
-)
-
+_FOLLOWUP_POLL_SECONDS = 600
 
 def _hours_since(timestamp: str) -> float:
     import datetime
@@ -2875,84 +3707,122 @@ def _hours_since(timestamp: str) -> float:
     return (datetime.datetime.now() - then).total_seconds() / 3600.0
 
 
+def _nudge_decision(partner_name: str, conversation: list[dict]) -> dict:
+    """2026-10-14: whether this stalled chat gets a nudge, and its context-
+    specific text (brain.build_nudge_prompt). No fixed fallback line any more:
+    if the AI call fails or answers unreadably, NO nudge is sent — a generic
+    or wrong nudge reaches a real business, a missed one only costs a
+    follow-up. {ok, nudge, reason, message}."""
+    try:
+        raw = run_openai_chat_text(brain.build_nudge_prompt(partner_name, conversation), model="gpt-4o",
+                                   timeout=45, caller="kogul.followup_nudge")
+    except Exception as e:
+        return {"ok": False, "nudge": False, "reason": f"AI call failed: {str(e)[:150]}", "message": ""}
+    return brain.parse_nudge_output(raw)
+
+
+def _wait_anchor(partner_id: int, stored_anchor: str | None) -> str | None:
+    """When the current unanswered wait began: the first PC Agent message
+    after the partner's (or a human's) last message. Nudges don't move it,
+    so 20h / 24h / 72h are all measured from the same starting point. After a
+    number switch the switch time is stored and used instead."""
+    if stored_anchor:
+        return stored_anchor
+    with db.conn() as c:
+        last_in = c.execute("SELECT MAX(id) AS m FROM messages WHERE partner_id = ? AND sender IN ('partner','human')",
+                            (partner_id,)).fetchone()["m"] or 0
+        row = c.execute("SELECT created_at FROM messages WHERE partner_id = ? AND sender = 'kogul' AND id > ? "
+                        "ORDER BY id LIMIT 1", (partner_id, last_in)).fetchone()
+    return row["created_at"] if row else None
+
+
 def _run_followup_check() -> None:
-    """One pass over every partner waiting on a reply. Only acts on chats
-    where PC Agent sent the LAST message (i.e. we're the one waiting) —
-    if the partner's turn is last, last_message_at is still updated by
-    _log_message but the conversation is ours to answer, not the other way
-    round, so it's deliberately excluded via the messages.sender check."""
+    """One pass over every chat where PC Agent is waiting on the partner.
+    Skips chats a human owns, chats flagged for a human, and chats whose last
+    PC Agent message failed to send (the partner never got it, so there is
+    nothing to time out)."""
     with db.conn() as c:
         candidates = c.execute(
-            """SELECT p.id, p.name, p.phone, p.phone_2, p.followup_stage, p.last_message_at,
-                      wc.concept, wc.department, wc.source AS category_source
+            """SELECT p.id, p.name, p.phone, p.phone_2, p.followup_stage, p.followup_anchor_at
                FROM partners p
-               JOIN weekly_categories wc ON wc.id = p.weekly_category_id
-               WHERE p.status IN ('new','contacted','replied','negotiating')
+               WHERE p.status IN ('contacted','replied','negotiating')
                  AND p.human_takeover = 0 AND p.needs_handover = 0
-                 AND p.followup_stage != 'done'
-                 AND p.last_message_at IS NOT NULL"""
+                 AND p.followup_stage != 'done'"""
         ).fetchall()
 
     for row in candidates:
+        pid = row["id"]
         with db.conn() as c:
             last_msg = c.execute(
-                "SELECT sender FROM messages WHERE partner_id = ? ORDER BY id DESC LIMIT 1", (row["id"],)
+                "SELECT sender, send_status FROM messages WHERE partner_id = ? AND sender != 'system' "
+                "ORDER BY id DESC LIMIT 1", (pid,)
             ).fetchone()
-        if not last_msg or last_msg["sender"] not in ("kogul", "system"):
+        if not last_msg or last_msg["sender"] != "kogul":
             continue  # the partner (or a human) spoke last — not our wait to time out
-
-        try:
-            elapsed = _hours_since(row["last_message_at"])
-        except ValueError:
-            continue  # malformed timestamp — skip rather than crash the whole pass
-
-        # 2026-10-13: these three checks are independent (not elif) since
-        # the final 72h unresponsive mark must still fire even for a partner
-        # that already nudged/switched earlier — each only acts once per
-        # partner (followup_stage/status guards prevent re-firing) and the
-        # function returns from the loop iteration via `continue` below once
-        # one of them changes state, so they can't double-fire in one pass.
-        stage = row["followup_stage"]
-        if stage == "none" and elapsed >= _FOLLOWUP_NUDGE_HOURS:
-            _log_message(row["id"], "kogul", _FOLLOWUP_NUDGE_TEXT, simulated=True)
-            with db.conn() as c:
-                c.execute("UPDATE partners SET followup_stage = 'nudged' WHERE id = ?", (row["id"],))
+        if last_msg["send_status"] == "failed":
             continue
-        if stage in ("none", "nudged") and elapsed >= _FOLLOWUP_SWITCH_HOURS and row["phone_2"]:
+        anchor = _wait_anchor(pid, row["followup_anchor_at"])
+        if not anchor:
+            continue
+        try:
+            elapsed = _hours_since(anchor)
+        except ValueError:
+            continue
+
+        stage = row["followup_stage"]
+        # 2026-10-14, user: "20 hours: a polite nudge - only if the
+        # conversation window is about to end". Measured from the PARTNER's
+        # last message (that's what opens WhatsApp's 24h window), not from
+        # our wait anchor: no nudge on cold outreach they never answered,
+        # and none once the window has closed (a missed tick never turns into
+        # a paid cold template).
+        since_partner = _hours_since_partner_wrote(pid)
+        if (stage == "none" and since_partner is not None
+                and _FOLLOWUP_NUDGE_HOURS <= since_partner < _WINDOW_SAFE_HOURS):
+            with db.conn() as c:
+                conv = [dict(m) for m in c.execute("SELECT * FROM messages WHERE partner_id = ? ORDER BY id",
+                                                   (pid,)).fetchall()]
+            # 2026-10-14: only if the chat stalled midway with no clear
+            # direction or decision, and the text fits where it stopped.
+            decision = _nudge_decision(row["name"], conv)
+            if decision["nudge"]:
+                with _partner_lock(pid):
+                    _send_and_log(pid, "kogul", decision["message"])
+                new_stage = "nudged"
+            else:
+                why = decision["reason"] or "no reason given"
+                _log_message(pid, "system", f"No 20h nudge sent: {why}" if decision["ok"]
+                             else f"No 20h nudge sent (could not decide safely): {why}", simulated=True)
+                new_stage = "nudge_skipped"  # decided once per quiet spell; a partner reply resets to 'none'
+            with db.conn() as c:
+                c.execute("UPDATE partners SET followup_stage = ? WHERE id = ?", (new_stage, pid))
+            continue
+        if stage in ("none", "nudged", "nudge_skipped") and elapsed >= _FOLLOWUP_SWITCH_HOURS and row["phone_2"]:
             _log_message(
-                row["id"], "system",
+                pid, "system",
                 f"No response after {_FOLLOWUP_SWITCH_HOURS}h on {row['phone'] or '(no number)'} — "
                 f"switching outreach to second number {row['phone_2']}.",
                 simulated=True,
             )
             with db.conn() as c:
                 c.execute(
-                    "UPDATE partners SET phone = ?, phone_2 = NULL, followup_stage = 'switched_number', "
-                    "last_message_at = ? WHERE id = ?",
-                    (row["phone_2"], db.now(), row["id"])
+                    "UPDATE partners SET phone_prev = phone, phone = ?, phone_2 = NULL, "
+                    "followup_stage = 'switched_number', followup_anchor_at = ? WHERE id = ?",
+                    (row["phone_2"], db.now(), pid)
                 )
-            result, status = _do_partner_auto_reply(row["id"], opening=True)
-            if not (status == 200 and result.get("ok")):
-                _log_message(row["id"], "system",
-                             f"Opening message to second number failed: {result.get('error')}",
+            result, status = _do_partner_auto_reply(pid, opening=True)
+            if not (status == 200 and result.get("auto_replied")):
+                _log_message(pid, "system",
+                             f"Opening message to second number failed: {result.get('error') or result.get('reason')}",
                              simulated=True)
             continue
-        # 2026-10-13, user: "in progress - if its still chatting and if it
-        # falls under 3 day window, if 3 days no reply push it unresponsive"
-        # — clarified: "no 20h nudge stays same, even after nudge if thres
-        # no reply after 3 dasy - then unresponsive". Fires regardless of
-        # whether a number-switch happened (elapsed is measured from
-        # last_message_at, which the switch branch above already resets),
-        # so this is really "72h since our last outbound message, on
-        # whichever number we were last trying" — covers both the
-        # single-number case (no phone_2, waited the full 72h past the
-        # nudge) and the two-number case (72h past the switch).
         if elapsed >= _FOLLOWUP_UNRESPONSIVE_HOURS:
             with db.conn() as c:
                 c.execute(
-                    "UPDATE partners SET status = 'unresponsive', followup_stage = 'done' WHERE id = ?",
-                    (row["id"],)
+                    "UPDATE partners SET status = 'unresponsive', followup_stage = 'done' WHERE id = ?", (pid,)
                 )
+            _log_message(pid, "system", f"No reply for {_FOLLOWUP_UNRESPONSIVE_HOURS}h — marked unresponsive.",
+                         simulated=True)
 
 
 def _followup_scheduler_loop() -> None:
@@ -2972,6 +3842,13 @@ if __name__ == "__main__":
     port = int(os.environ.get("KOGUL_PORT", "5010"))
     print(f"Kogul running at http://127.0.0.1:{port}")
     threading.Thread(target=_followup_scheduler_loop, daemon=True).start()
+    # 2026-10-14: every pending business card gets its report before anyone reviews it.
+    with db.conn() as _c:
+        _queue_report_builds([r["id"] for r in _c.execute(
+            "SELECT wc.id FROM weekly_categories wc LEFT JOIN card_reports r ON r.category_id = wc.id "
+            "WHERE wc.source = 'brand_discovery' AND wc.review_status = 'pending_review' "
+            "AND (r.category_id IS NULL OR r.profile_json IS NULL OR r.research_json IS NULL) ORDER BY wc.id").fetchall()])
+    threading.Thread(target=_upgrade_existing_reports, daemon=True).start()
     # threaded=True is required, not optional — weekly/generate and
     # category/approve do live HTTP calls (kapruka.com, Business Scout) in
     # a background thread that can take minutes; without this flag Flask's
@@ -2979,4 +3856,7 @@ if __name__ == "__main__":
     # request queues up behind whatever's in flight and the whole app looks
     # hung (confirmed live 2026-09-30 — a generate job left one connection
     # ESTABLISHED with no other request completing until it finished).
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+    # KOGUL_HOST=127.0.0.1 when a reverse proxy (HTTPS) sits in front; the
+    # default 0.0.0.0 keeps the current VPS setup reachable, and the access
+    # guard above requires KOGUL_ADMIN_PASSWORD for any non-local request.
+    app.run(host=os.environ.get("KOGUL_HOST", "0.0.0.0"), port=port, debug=False, threaded=True)

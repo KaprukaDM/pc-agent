@@ -155,6 +155,57 @@ CREATE TABLE IF NOT EXISTS partner_simulation_messages (
     attachments    TEXT
 );
 
+-- 2026-10-14, user: PC team tests via Simulate as Partner and "add rules or
+-- define rules if any problem is detected that will be automatically
+-- included". Active rows are appended to PC Agent's brief in every prompt
+-- (brain.team_rules_block), read fresh each message like KOGUL.md.
+CREATE TABLE IF NOT EXISTS agent_rules (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule           TEXT NOT NULL,       -- the instruction PC Agent must follow
+    problem        TEXT,                -- what the tester saw go wrong
+    flagged_reply  TEXT,                -- the PC Agent reply that was flagged, verbatim
+    simulation_id  INTEGER,             -- the test scenario it came from (NULL = added directly)
+    added_by       TEXT,
+    active         INTEGER NOT NULL DEFAULT 1,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT
+);
+
+-- 2026-10-14: Partner report (kogul/partner_report.py). One cached row per
+-- BUSINESS CARD (weekly_categories row) — user: "i want the partner report
+-- before reaching out", so it exists from discovery on, before any partner
+-- row/chat. Rebuilt when the chat has new messages. Each *_json is that
+-- piece's own result so one failing piece never blanks the others.
+-- (Replaced same-day partner-keyed tables partner_reports/partner_questions;
+-- _migrate copies their rows across.)
+CREATE TABLE IF NOT EXISTS card_reports (
+    category_id    INTEGER PRIMARY KEY REFERENCES weekly_categories(id),
+    catalog_json   TEXT,      -- store_catalog(): real SKU count + titles from their own store
+    site_json      TEXT,      -- site_location_text(): address snippets from their own pages
+    profile_json   TEXT,      -- extract_profile(): about, product types, location, answers, analysis
+    kapruka_json   TEXT,      -- kapruka_check(): live Kapruka search per product type
+    kapruka_terms  TEXT,      -- the product types kapruka_json was run for (re-run only when they change)
+    error          TEXT,      -- last build error, shown on the report
+    msg_count      INTEGER,   -- messages in the chat when profile_json was built (staleness check)
+    built_at       TEXT
+);
+
+-- 2026-10-14, user chose "Per-partner questions": AI suggests questions specific
+-- to one business, a human approves/rejects (before or after outreach); humans
+-- can add their own (approved on creation). Only 'approved' rows are given to
+-- PC Agent to ask.
+CREATE TABLE IF NOT EXISTS card_questions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    category_id INTEGER NOT NULL REFERENCES weekly_categories(id),
+    question    TEXT NOT NULL,
+    why         TEXT,
+    source      TEXT NOT NULL,                     -- 'ai' | 'human'
+    status      TEXT NOT NULL DEFAULT 'suggested', -- suggested | approved | rejected
+    added_by    TEXT,
+    created_at  TEXT NOT NULL,
+    decided_at  TEXT
+);
+
 CREATE TABLE IF NOT EXISTS whatsapp_test_sends (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     phone_number    TEXT NOT NULL,       -- E.164 digits, no '+' (Meta Cloud API convention)
@@ -195,6 +246,13 @@ CREATE TABLE IF NOT EXISTS missing_items (
     ads_checked_at TEXT,                -- so a stale lookup is visible, never silently reused forever
     source        TEXT NOT NULL DEFAULT 'manual',  -- 'sheet' (original import) | 'manual' (added in-app)
     created_at    TEXT NOT NULL
+);
+
+-- Meta re-delivers a webhook it thinks failed; every inbound message id is
+-- recorded here first (INSERT OR IGNORE) so a redelivery never gets a second reply.
+CREATE TABLE IF NOT EXISTS wa_inbound (
+    msg_id      TEXT PRIMARY KEY,
+    received_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS token_usage (
@@ -240,6 +298,33 @@ DEFAULT_SETTINGS = {
     # field, superseded by pc_team_emails.
     "pc_team_emails": "[]",
     "pc_team_phones": "[]",
+    # "1" = partner-facing messages really go out over the WhatsApp Cloud API.
+    # "0" (default) = they are only logged and shown as "simulated — not sent".
+    "whatsapp_live": "0",
+    # Approved Meta template used whenever we message a partner outside the
+    # 24h customer-service window (cold opener, nudge, second-number opener) —
+    # free-form text is rejected there (error 131047). Empty = such sends fail
+    # visibly instead of pretending to succeed.
+    "wa_outreach_template": "",
+    # 2026-10-14: team alerts (hot lead / needs a human) to the PC team's own
+    # WhatsApp. Free-form text only reaches a number that messaged the business
+    # in the last 24h (a template does NOT open that window — the old
+    # "hello_world then text" path delivered only hello_world). An approved
+    # UTILITY template with one body variable, e.g. "PC Agent alert: {{1}}",
+    # carries the whole alert. Empty = text only (works inside the 24h window).
+    "wa_alert_template": "",
+    "wa_alert_template_lang": "en_US",
+    # 2026-10-14, user: once a partner is interested, PC Agent "requests a brief
+    # Business information like whats the products they sell, How many products
+    # they have, Location of their buisness". One question per message, in order;
+    # per-partner approved questions (partner_questions) are asked after these.
+    "brief_questions": json.dumps([
+        "What products do you sell?",
+        "Roughly how many individual products (SKUs) do you have? Count each item, not categories.",
+        "Where is your business based?",
+        "Only if they are outside Colombo: are you OK with consignment, sending stock to Kapruka's warehouse?",
+    ]),
+    "wa_outreach_template_lang": "en_US",
     # 2026-10-04, user-authored opening message — went through 5 rounds:
     # (1) "Increase your sales by increasing the visibility among
     # international audience..." (2-para, too long), (2) shortened but
@@ -270,9 +355,10 @@ DEFAULT_SETTINGS = {
 
 @contextmanager
 def conn():
-    c = sqlite3.connect(DB_PATH)
+    c = sqlite3.connect(DB_PATH, timeout=15)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys = ON")
+    c.execute("PRAGMA busy_timeout = 15000")
     try:
         yield c
         c.commit()
@@ -347,6 +433,49 @@ def _migrate(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE partners ADD COLUMN phone_2 TEXT")
     if "followup_stage" not in pcols:
         c.execute("ALTER TABLE partners ADD COLUMN followup_stage TEXT NOT NULL DEFAULT 'none'")
+    if "phone_prev" not in pcols:
+        # the number we switched AWAY from — still matched for inbound replies
+        c.execute("ALTER TABLE partners ADD COLUMN phone_prev TEXT")
+    if "followup_anchor_at" not in pcols:
+        # when the current unanswered wait started; nudges don't reset it
+        c.execute("ALTER TABLE partners ADD COLUMN followup_anchor_at TEXT")
+
+    # 2026-10-14: the report moved from per-partner to per-card (user wants it
+    # before outreach). Copy any rows from the same-day partner-keyed tables.
+    old = {r["name"] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "partner_questions" in old:
+        c.execute("""INSERT INTO card_questions (category_id, question, why, source, status, added_by, created_at, decided_at)
+                     SELECT p.weekly_category_id, q.question, q.why, q.source, q.status, q.added_by, q.created_at, q.decided_at
+                     FROM partner_questions q JOIN partners p ON p.id = q.partner_id""")
+        c.execute("DROP TABLE partner_questions")
+    if "partner_reports" in old:
+        c.execute("""INSERT OR IGNORE INTO card_reports (category_id, catalog_json, profile_json, kapruka_json,
+                       kapruka_terms, error, msg_count, built_at)
+                     SELECT p.weekly_category_id, r.catalog_json, r.profile_json, r.kapruka_json, r.kapruka_terms,
+                            r.error, r.msg_count, r.built_at
+                     FROM partner_reports r JOIN partners p ON p.id = r.partner_id""")
+        c.execute("DROP TABLE partner_reports")
+
+    # 2026-10-14: web research (Google location fallback + brand value), and the
+    # call-booking CTA ("arrange a call with the team", 3 slots, 11-4).
+    rcols = {r["name"] for r in c.execute("PRAGMA table_info(card_reports)")}
+    if "research_json" not in rcols:
+        c.execute("ALTER TABLE card_reports ADD COLUMN research_json TEXT")
+    for table in ("partners", "partner_simulations"):
+        tcols = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
+        for col in ("call_slot", "call_contact_name", "call_booked_at"):
+            if col not in tcols:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+
+    mcols = {r["name"] for r in c.execute("PRAGMA table_info(messages)")}
+    if "send_status" not in mcols:
+        # simulated | sent | delivered | read | failed
+        c.execute("ALTER TABLE messages ADD COLUMN send_status TEXT")
+        c.execute("UPDATE messages SET send_status = CASE WHEN simulated = 1 THEN 'simulated' ELSE 'sent' END")
+    if "wa_message_id" not in mcols:
+        c.execute("ALTER TABLE messages ADD COLUMN wa_message_id TEXT")
+    if "send_error" not in mcols:
+        c.execute("ALTER TABLE messages ADD COLUMN send_error TEXT")
 
     # 2026-10-06, user: "make sure the kogul has the ability to send images, files, read images
     # if received, also in chat simulation and partner chats" — one JSON column per chat table.
@@ -364,6 +493,8 @@ def _migrate(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE partner_simulations ADD COLUMN status TEXT NOT NULL DEFAULT 'new'")
     if "needs_handover" not in simcols:
         c.execute("ALTER TABLE partner_simulations ADD COLUMN needs_handover INTEGER DEFAULT 0")
+    if "not_agreed_reason" not in simcols:
+        c.execute("ALTER TABLE partner_simulations ADD COLUMN not_agreed_reason TEXT")
     # 2026-10-05, user: "Make sure the chats status falls into one of these
     # buckets" — the status column briefly used its own vocabulary
     # (not_started/in_progress/handover/error) before being aligned to
@@ -401,6 +532,8 @@ def _migrate(c: sqlite3.Connection) -> None:
 
 def init_db() -> None:
     with conn() as c:
+        # WAL lets the scheduler, webhook worker and request threads read while one writes.
+        c.execute("PRAGMA journal_mode = WAL")
         c.executescript(SCHEMA)
         _migrate(c)
         for k, v in DEFAULT_SETTINGS.items():

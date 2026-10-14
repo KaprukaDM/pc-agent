@@ -1,0 +1,11 @@
+# Live data: partner phones, emails and WhatsApp chats stay on the machine
+*.sqlite
+*.sqlite.bak*
+data/*.bak*
+
+# Secrets
+.env
+
+# Runtime
+__pycache__/
+*.log

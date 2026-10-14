@@ -233,11 +233,67 @@ def _mark_seen(urls: list[str]) -> None:
     half-written, which is the failure mode that actually causes a lasting
     outage (every future read permanently failing) rather than a one-off
     stale duplicate retry."""
-    seen = _load_seen() | set(urls)
-    SEEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = SEEN_PATH.with_suffix(".tmp")
-    tmp_path.write_text(json.dumps({"urls": sorted(seen)}, ensure_ascii=False), encoding="utf-8")
-    tmp_path.replace(SEEN_PATH)
+    if not urls:
+        return
+    with _SEEN_LOCK:
+        seen = _load_seen() | set(urls)
+        SEEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = SEEN_PATH.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps({"urls": sorted(seen)}, ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(SEEN_PATH)
+
+
+_SEEN_LOCK = threading.Lock()
+
+
+def _exclude_block(urls) -> str:
+    """Bare domains (shorter than full URLs), capped so the search prompt
+    doesn't grow forever as the seen list does. Anything past the cap is
+    still filtered out in code after the search returns."""
+    doms = sorted({re.sub(r"^https?://(www\.)?", "", u.strip().lower()).split("/")[0] for u in (urls or []) if u})
+    if not doms:
+        return "(none yet)"
+    return ", ".join(doms[:250]) + (f" (+{len(doms) - 250} more)" if len(doms) > 250 else "")
+
+
+def _pipeline_rows() -> list:
+    try:
+        with db.conn() as c:
+            return c.execute("SELECT concept, business_url, brand_phones FROM weekly_categories").fetchall()
+    except Exception:
+        return []
+
+
+def _pipeline_domain_keys() -> set[str]:
+    """Every business site already in Kogul (any week, any review outcome)."""
+    return {_norm_partner_key(r["business_url"]) for r in _pipeline_rows() if r["business_url"]}
+
+
+def _pipeline_name_keys() -> set[str]:
+    return {_norm_partner_key(r["concept"]) for r in _pipeline_rows() if r["concept"]}
+
+
+def _pipeline_phone_tails() -> set[str]:
+    """Last 9 digits of every phone already attached to a business or partner."""
+    tails = set()
+    for r in _pipeline_rows():
+        try:
+            for p in json.loads(r["brand_phones"] or "[]"):
+                d = re.sub(r"\D", "", str(p))
+                if len(d) >= 9:
+                    tails.add(d[-9:])
+        except (ValueError, TypeError):
+            continue
+    try:
+        with db.conn() as c:
+            for r in c.execute("SELECT phone, phone_2 FROM partners").fetchall():
+                for p in (r["phone"], r["phone_2"]):
+                    d = re.sub(r"\D", "", p or "")
+                    if len(d) >= 9:
+                        tails.add(d[-9:])
+    except Exception:
+        pass
+    return tails
 
 
 # ------------------------------------------------------------- web-search fallback
@@ -263,6 +319,77 @@ _GAP_HINT_CACHE: dict[str, list[str]] = {}
 
 
 _GAP_EXCLUDE_WORDS = {"accessories", "accessory", "parts", "spares", "components"}
+
+# ------------------------------------------------- Expand Catalog (thin) lens
+# 2026-10-14, user: "yes add that" — brand search only ever read New
+# Categories (status='category_gap': Daraz demand, no Kapruka page). Expand
+# Catalog's Daraz side (we HAVE the page, Daraz proves demand, but we list
+# <10 products — sourcing.source_daraz_thin_catalog) is the other half: a
+# partner who can DEEPEN a thin page we already have. Same additive bonus-
+# hint pattern as the missing-items / GA4 blocks, never a requirement.
+#
+# The Daraz->Kapruka page join behind these rows is fuzzy and crosses
+# departments wrongly (checked on all 108 rows 2026-10-14: automobile
+# "Mirrors"/"Sun Protection" -> cosmetics pages, toys_kids "Monitors" ->
+# computer monitors, grocery "Cheese" -> cheesecakes). A wrong row would put
+# a false "Kapruka only has N products" claim in the prompt and on the card,
+# so a row is kept only if its Kapruka URL section (/online/<section>/)
+# plausibly belongs to the Daraz row's department. Sections map to several
+# departments where Kapruka's own site groups them that way (baby -> toys
+# AND home, fashion -> clothing AND beauty).
+_URL_SECTION_DEPTS = {
+    "automobile": {"automobile"},
+    "cosmetics": {"beauty_fragrance"},
+    "fashion": {"clothing_fashion", "beauty_fragrance", "jewellery"},
+    "clothing": {"clothing_fashion"},
+    "home_lifestyle": {"home_lifestyle", "toys_kids"},
+    "electronics": {"electronics"},
+    "jewellery": {"jewellery"},
+    "pet": {"pet"},
+    "sports": {"sports_fitness", "toys_kids"},
+    "bicycles": {"sports_fitness", "toys_kids"},
+    "grocery": {"grocery_fresh", "home_lifestyle"},
+    "baby": {"toys_kids", "home_lifestyle"},
+    "childrens": {"toys_kids", "books_stationery_cards"},
+}
+_THIN_GENERIC_NAMES = {"others", "other", "misc", "miscellaneous"}
+_thin_rows_cache: list[dict] | None = None
+_thin_lock = threading.Lock()
+
+
+def _thin_catalog_hints_for_department(department: str, limit: int = 6) -> list[dict]:
+    """Expand Catalog rows for one department, highest Daraz revenue first,
+    after the section-match + accessory/generic-name filters above. Each:
+    {name, product_count, revenue_proxy, kapruka_url}. Fail-open to []."""
+    global _thin_rows_cache
+    with _thin_lock:
+        if _thin_rows_cache is None:
+            try:
+                import sourcing
+                _thin_rows_cache = sourcing.source_daraz_thin_catalog(limit=100000)
+            except Exception:
+                _thin_rows_cache = []  # fail-open: search just runs without this lens
+        rows = _thin_rows_cache
+
+    out, seen_names = [], set()
+    for r in rows:  # already sorted by revenue_proxy DESC
+        if r.get("department") != department:
+            continue
+        name = (r.get("concept") or "").strip()
+        words = set(re.findall(r"[a-z]+", name.lower()))
+        if not name or name.lower() in _THIN_GENERIC_NAMES or words & _GAP_EXCLUDE_WORDS:
+            continue
+        m = re.search(r"/online/([^/]+)/", r.get("kapruka_url") or "")
+        if not m or department not in _URL_SECTION_DEPTS.get(m.group(1), set()):
+            continue
+        if name.lower() in seen_names:  # same Daraz label under two breadcrumbs
+            continue
+        seen_names.add(name.lower())
+        out.append({"name": name, "product_count": r.get("kapruka_product_count"),
+                    "revenue_proxy": r.get("daraz_revenue_proxy"), "kapruka_url": r.get("kapruka_url")})
+        if len(out) >= limit:
+            break
+    return out
 
 # ------------------------------------------------- Potential Product Opportunities
 # (originally a one-time pull from the user's "Kapruka - New Opportunity"
@@ -673,6 +800,7 @@ spirit counts even if it doesn't match the examples word-for-word.
 {gap_block}
 {missing_block}
 {ga4_block}
+{expand_block}
 
 {fit_examples}
 
@@ -728,7 +856,7 @@ def _open_web_search_for_brands(n: int, exclude_urls: set[str], model: str) -> l
     Fail-open to an empty list on any error, same as every other search
     function here — a failed open search just means fewer candidates this
     week, never a crash."""
-    exclude_block = ", ".join(sorted(exclude_urls)) if exclude_urls else "(none yet)"
+    exclude_block = _exclude_block(exclude_urls)
     # Missing-item rows whose Department didn't map onto the 12 search slugs
     # (Cakes, Pharmacy, Flowers, Services, or blank) — this open stream has
     # no department restriction, so they ride along here instead of being
@@ -776,15 +904,22 @@ def _prioritize_departments(depts: list[str]) -> list[str]:
     bug must never block sourcing from running at all."""
     random.shuffle(depts)
     try:
+        # Rows found in the last 8 weeks, whatever their review outcome: a
+        # department we keep searching and rejecting is "covered" too, so
+        # rejecting no longer pushes it back to the front.
         with db.conn() as c:
             rows = c.execute(
                 "SELECT department, COUNT(*) AS n FROM weekly_categories "
-                "WHERE review_status != 'rejected' GROUP BY department"
+                "WHERE created_at >= datetime('now', '-56 days') GROUP BY department"
             ).fetchall()
         counts = {r["department"]: r["n"] for r in rows}
     except Exception:
         return depts
-    return sorted(depts, key=lambda d: counts.get(d, 0))
+    # Weighted random order (weight 1/(1+count)): under-represented
+    # departments usually come first, but every department keeps a real
+    # chance of a slot each week, so none is starved indefinitely.
+    keyed = [(random.random() ** (1 + counts.get(d, 0)), d) for d in depts]
+    return [d for _, d in sorted(keyed, reverse=True)]
 
 
 def _web_search_for_brands(n: int, exclude_urls: set[str], model: str,
@@ -813,7 +948,7 @@ def _web_search_for_brands(n: int, exclude_urls: set[str], model: str,
     I/O, so threads genuinely overlap here (no asyncio needed). Capped at
     enough departments to plausibly reach `n` candidates, not all 12 every
     time, so a small `n` doesn't always pay for 12 searches."""
-    exclude_block = ", ".join(sorted(exclude_urls)) if exclude_urls else "(none yet)"
+    exclude_block = _exclude_block(exclude_urls)
 
     depts = _prioritize_departments(list(_DEPT_SEARCH_HINTS.keys()))
     # Enough departments to plausibly cover `n` at per_dept each, plus a
@@ -932,6 +1067,19 @@ def _web_search_for_brands(n: int, exclude_urls: set[str], model: str,
         else:
             ga4_block = ""
 
+        # Expand Catalog lens (2026-10-14, see _thin_catalog_hints_for_department):
+        # pages Kapruka already has but stocks thinly, with Daraz-proven demand.
+        thin_rows = _thin_catalog_hints_for_department(dept)
+        if thin_rows:
+            items = "; ".join(f"{r['name']} (only {r['product_count']} product(s) on Kapruka now)"
+                              for r in thin_rows)
+            expand_block = (f"ALSO WORTH KNOWING: Kapruka already has a page for these {dept_label} "
+                            f"categories, Daraz shows real demand for them, but Kapruka's selection is "
+                            f"thin — {items}. A business that could add real depth to any of these is a "
+                            f"strong target — again just one more signal, not a strict requirement.")
+        else:
+            expand_block = ""
+
         # 2026-10-02: the "niche/curated/giftable" example brands (socks,
         # brownies) actively worked AGAINST a multi-category cluster target
         # — a real auto-parts/diagnostic-tools retailer is a functional B2B-
@@ -955,7 +1103,7 @@ def _web_search_for_brands(n: int, exclude_urls: set[str], model: str,
         prompt = _SEARCH_PROMPT_TEMPLATE.format(
             n=per_dept, dept_label=dept_label, dept_hint=_DEPT_SEARCH_HINTS[dept],
             gap_block=gap_block, missing_block=missing_block, ga4_block=ga4_block,
-            fit_examples=fit_examples, exclude_block=exclude_block)
+            expand_block=expand_block, fit_examples=fit_examples, exclude_block=exclude_block)
         try:
             raw = run_claude_cli_with_search(prompt, model=model, timeout=240)
             found = extract_json(raw)
@@ -1630,12 +1778,15 @@ def _guess_business_name(fetched: dict) -> str:
 def _recent_reject_reasons(limit: int = 15) -> list[str]:
     try:
         with db.conn() as c:
+            # brand_discovery rows only (old category-type rows were rejected
+            # for unrelated reasons), newest first, deduped case-insensitively
             rows = c.execute(
-                "SELECT DISTINCT reject_reason FROM weekly_categories "
-                "WHERE review_status = 'rejected' AND reject_reason IS NOT NULL AND TRIM(reject_reason) != '' "
-                "ORDER BY reviewed_at DESC LIMIT ?", (limit,)
+                "SELECT TRIM(reject_reason) AS r, MAX(reviewed_at) AS last_at FROM weekly_categories "
+                "WHERE review_status = 'rejected' AND source = 'brand_discovery' "
+                "AND reject_reason IS NOT NULL AND TRIM(reject_reason) != '' "
+                "GROUP BY LOWER(TRIM(reject_reason)) ORDER BY last_at DESC LIMIT ?", (limit,)
             ).fetchall()
-        return [r["reject_reason"].strip() for r in rows]
+        return [r["r"] for r in rows]
     except Exception:
         return []
 
@@ -1745,9 +1896,10 @@ def judge_brand_fit(fetched_candidates: list[dict], model: str = "claude-sonnet-
     # every batch this call makes rather than re-queried per batch.
     reject_reasons = _recent_reject_reasons()
     reject_reasons_block = (
-        "A human reviewer has previously REJECTED businesses for these real reasons — weigh them "
-        "when judging similar candidates below (a candidate matching one of these patterns should "
-        "likely also be fits:false, with a reason that says which pattern it matches):\n"
+        "A human reviewer has previously REJECTED businesses for these real reasons. Use them as "
+        "guidance, not hard rules: only mark a candidate fits:false for one of these patterns when it "
+        "CLEARLY matches it (say which pattern in your reason). When in doubt, keep it — a human "
+        "still reviews every kept candidate:\n"
         + "\n".join(f'  - "{r}"' for r in reject_reasons)
     ) if reject_reasons else ""
 
@@ -1784,9 +1936,26 @@ def judge_brand_fit(fetched_candidates: list[dict], model: str = "claude-sonnet-
                             "products_to_bring_in": v.get("products_to_bring_in") or "",
                             "search_keywords": [k.strip() for k in raw_keywords if isinstance(k, str) and k.strip()],
                             "reason": v.get("reason") or ""})
-            # else: genuinely rejected, not an error case — dropped
+            else:
+                _log_judge_rejection(f, v)
 
     return out
+
+
+JUDGE_LOG_PATH = Path(__file__).resolve().parent / "data" / "brand_fit_rejections.jsonl"
+
+
+def _log_judge_rejection(f: dict, verdict: dict) -> None:
+    """Every candidate the fit judge drops is recorded (url, name, reason), so
+    an over-strict week can be spotted and a wrongly-dropped brand re-added
+    to BRAND_SEEDS.txt."""
+    try:
+        with JUDGE_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "url": f.get("url"),
+                                 "name": verdict.get("business_name") or _guess_business_name(f),
+                                 "reason": verdict.get("reason") or ""}, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 # 2026-10-08, user: "have both google ads international demand - UK, Canada,
@@ -1927,42 +2096,158 @@ def attach_demand_evidence(candidates: list[dict], model: str = "claude-sonnet-5
                             f"{', '.join(_INTL_ADS_MARKETS)}",
                 })
 
-        dept = c.get("department")
-        if dept:
-            for g in _ga4_hints_for_department(dept, top_n=3):
-                evidence.append({
-                    "source": "ga4", "label": f'Kapruka sales — {g["item_name"]}',
-                    "value": g["items_purchased"], "unit": f'sold, LKR {g["revenue"]:,.0f} revenue (last 90 days)',
-                })
-            # Daraz gap revenue needs the raw rows — _daraz_gap_hints_for_department
-            # only returns category NAMES (that's all its other caller,
-            # _search_one's prompt-building, ever needed), so this re-queries
-            # the same category_gap rows directly rather than widen that
-            # helper's return shape for every other caller's sake.
-            if DB_STORE_PATH.exists():
-                try:
-                    import sqlite3
-                    conn = sqlite3.connect(DB_STORE_PATH)
-                    conn.row_factory = sqlite3.Row
-                    try:
-                        rows = conn.execute(
-                            "SELECT daraz_name, revenue_proxy FROM daraz_categories "
-                            "WHERE status='category_gap' AND kapruka_department=? "
-                            "ORDER BY revenue_proxy DESC LIMIT 2", (dept,)
-                        ).fetchall()
-                    finally:
-                        conn.close()
-                    for r in rows:
-                        if r["revenue_proxy"]:
-                            evidence.append({
-                                "source": "daraz", "label": f'Daraz category gap — {r["daraz_name"]}',
-                                "value": r["revenue_proxy"], "unit": "LKR revenue proxy (Daraz, no Kapruka presence)",
-                            })
-                except Exception:
-                    pass  # fail-open: this candidate just gets no Daraz evidence
-
+        evidence += relevant_store_evidence(c)
         c["demand_evidence"] = evidence
     return candidates
+
+
+# --------------------------------------------- product-type-matched evidence
+# 2026-10-14, user screenshot: a chocolate-bar maker's card showed "Kapruka's
+# own sales" = three CAKES and "Daraz category gap" = Laundry And Home Care.
+# The old code took the department's top GA4 sellers / biggest Daraz gaps
+# (grocery_fresh) regardless of what the business sells. Now: build a wider
+# pool (the department's top rows + rows sharing a product word with the
+# business, from any department), then ONE gpt-4o call keeps only rows of the
+# same product type. Nothing relevant -> that section is simply absent: a
+# wrong number is worse than no number. Error -> no store evidence (same reason).
+
+_EVIDENCE_STOP = {"and", "with", "for", "the", "gift", "gifts", "box", "boxes", "set", "sets", "pack",
+                  "handmade", "natural", "organic", "premium", "collection", "collections", "range",
+                  "items", "products", "line", "lines", "sri", "lanka", "online"}
+
+_EVIDENCE_PROMPT = """A Sri Lankan business sells: {sells}
+
+Below are rows from Kapruka's sales data and Daraz category data. Keep ONLY rows that are the SAME
+KIND of product this business sells: something a shopper looking for this business's products would
+treat as the same type of item. Sharing a word is not enough ("chocolate chip cake" is a cake, not a
+chocolate bar; "hair removal wax" is not hair styling wax). A broader category that clearly contains
+their product counts (e.g. "Chocolates" for a chocolate-bar maker).
+
+Rows:
+{rows}
+
+Output ONLY a JSON array of the ids to keep, e.g. ["g3","d1"]. Empty array if none fit."""
+
+
+def _ev_words(text: str) -> set[str]:
+    """Product words, crude singular ("bars" -> "bar") so plurals still match."""
+    out = set()
+    for w in re.findall(r"[a-z]{3,}", (text or "").lower()):
+        if w in _EVIDENCE_STOP:
+            continue
+        out.add(w[:-1] if len(w) > 4 and w.endswith("s") and not w.endswith("ss") else w)
+    return out
+
+
+def _product_words(c: dict) -> set[str]:
+    return _ev_words(" ".join([c.get("products_to_bring_in") or ""] + list(c.get("search_keywords") or [])))
+
+
+def _evidence_pools(c: dict) -> tuple[list[dict], list[dict], list[dict]]:
+    dept = c.get("department")
+    words = _product_words(c)
+    # Rank keyword matches by HOW MANY product words they share, then revenue:
+    # otherwise one popular shared word floods the pool (2026-10-14: 25
+    # "chocolate ... cake" items crowded out every actual chocolate bar).
+    score = lambda name: len(words & _ev_words(name))
+    hit = lambda name: score(name) > 0
+
+    # GA4 can hold several rows under one product name (seen live: "Caravan
+    # Fresh Cashew Chocolate Bar" twice) — merge them so a card never lists one item twice.
+    merged: dict[str, dict] = {}
+    for r in _fetch_ga4_purchased_items(days=90):
+        m = merged.setdefault(r["item_name"].strip(), {**r, "item_name": r["item_name"].strip(),
+                                                        "items_purchased": 0, "revenue": 0})
+        m["items_purchased"] += r.get("items_purchased") or 0
+        m["revenue"] += r.get("revenue") or 0
+    ga4_all = list(merged.values())
+    ga4 = sorted([r for r in ga4_all if _map_ga4_item_name(r["item_name"]) == dept],
+                 key=lambda r: -r["revenue"])[:20]
+    seen = {r["item_name"] for r in ga4}
+    ga4 += sorted([r for r in ga4_all if r["item_name"] not in seen and hit(r["item_name"])],
+                  key=lambda r: (-score(r["item_name"]), -r["revenue"]))[:40]
+
+    gaps = []
+    if DB_STORE_PATH.exists():
+        try:
+            import sqlite3
+            conn = sqlite3.connect(DB_STORE_PATH)
+            conn.row_factory = sqlite3.Row
+            try:
+                rows = conn.execute("SELECT daraz_name, revenue_proxy, kapruka_department FROM daraz_categories "
+                                    "WHERE status='category_gap' AND revenue_proxy > 0 ORDER BY revenue_proxy DESC"
+                                    ).fetchall()
+            finally:
+                conn.close()
+            same = [dict(r) for r in rows if r["kapruka_department"] == dept][:20]
+            names = {r["daraz_name"] for r in same}
+            gaps = same + sorted([dict(r) for r in rows if r["daraz_name"] not in names and hit(r["daraz_name"])],
+                                 key=lambda r: (-score(r["daraz_name"]), -(r["revenue_proxy"] or 0)))[:20]
+        except Exception:
+            gaps = []
+
+    thin = []
+    try:
+        _thin_catalog_hints_for_department(dept or "", limit=1)  # fills the cache
+        thin = [{"name": r["concept"], "product_count": r["kapruka_product_count"],
+                 "revenue_proxy": r["daraz_revenue_proxy"], "kapruka_url": r["kapruka_url"]}
+                for r in (_thin_rows_cache or [])
+                if (r.get("department") == dept or hit(r.get("concept"))) and r.get("daraz_revenue_proxy")][:20]
+    except Exception:
+        thin = []
+    return ga4, gaps, thin
+
+
+def relevant_store_evidence(c: dict) -> list[dict]:
+    """GA4 / Daraz-gap / thin-page evidence that matches what THIS business
+    sells (see the block comment above). Returns evidence dicts, best first."""
+    sells = (c.get("products_to_bring_in") or "").strip() or ", ".join(c.get("search_keywords") or [])
+    if not sells:
+        return []
+    try:
+        ga4, gaps, thin = _evidence_pools(c)
+    except Exception:
+        return []
+    ids = {}
+    lines = []
+    for i, r in enumerate(ga4):
+        ids[f"g{i}"] = ("ga4", r)
+        lines.append(f'g{i}: Kapruka sold item "{r["item_name"]}"')
+    for i, r in enumerate(gaps):
+        ids[f"d{i}"] = ("daraz", r)
+        lines.append(f'd{i}: Daraz category "{r["daraz_name"]}"')
+    for i, r in enumerate(thin):
+        ids[f"t{i}"] = ("daraz_thin", r)
+        lines.append(f't{i}: Daraz category "{r["name"]}"')
+    if not lines:
+        return []
+    try:
+        from claude_cli import run_openai_chat_text
+        raw = run_openai_chat_text(_EVIDENCE_PROMPT.format(sells=sells, rows="\n".join(lines)),
+                                   model="gpt-4o", timeout=60, caller="kogul.evidence_relevance")
+        keep = [k for k in extract_json(raw) if k in ids]
+    except Exception:
+        return []
+
+    out, n = [], {"ga4": 0, "daraz": 0, "daraz_thin": 0}
+    caps = {"ga4": 3, "daraz": 2, "daraz_thin": 2}
+    picked = sorted((ids[k] for k in keep), key=lambda t: -(t[1].get("revenue") or t[1].get("revenue_proxy") or 0))
+    for kind, r in picked:
+        if n[kind] >= caps[kind]:
+            continue
+        n[kind] += 1
+        if kind == "ga4":
+            out.append({"source": "ga4", "label": f'Kapruka sales — {r["item_name"]}',
+                        "value": r["items_purchased"], "unit": f'sold, LKR {r["revenue"]:,.0f} revenue (last 90 days)'})
+        elif kind == "daraz":
+            out.append({"source": "daraz", "label": f'Daraz category gap — {r["daraz_name"]}',
+                        "value": r["revenue_proxy"], "unit": "LKR revenue proxy (Daraz, no Kapruka presence)"})
+        else:
+            out.append({"source": "daraz_thin", "label": f'Daraz demand, thin Kapruka page — {r["name"]}',
+                        "value": r["revenue_proxy"],
+                        "unit": f'LKR revenue proxy (Daraz); Kapruka lists {r["product_count"]} product(s)',
+                        "product_count": r["product_count"], "kapruka_url": r["kapruka_url"]})
+    return out
 
 
 _KEYWORD_BACKFILL_PROMPT = """For each business below, give 2-3 SHORT, real, generic phrases (1-4
@@ -2150,6 +2435,8 @@ def _source_brand_discovery_round(limit: int, model: str, exclude_business_names
     asks for more. Seen-URL exclusion naturally pushes each round toward
     URLs the previous round didn't already try."""
     seen = _load_seen()
+    # www./https/trailing-slash/TLD variants of one site are the same business
+    seen_keys = {_norm_partner_key(u) for u in seen} | _pipeline_domain_keys()
 
     # Streams 1 (open) and 2 (opportunity-tool/gap-driven) run CONCURRENTLY,
     # equal priority, each targeting half the quota (rounded up so a small
@@ -2180,14 +2467,18 @@ def _source_brand_discovery_round(limit: int, model: str, exclude_business_names
 
     web_search_urls: set[str] = set()
     candidate_urls: list[str] = []
+    candidate_keys: set[str] = set()
     for f in open_found + gap_found:
-        if f["url"] not in seen and f["url"] not in candidate_urls:
+        k = _norm_partner_key(f["url"])
+        if k and k not in seen_keys and k not in candidate_keys:
             candidate_urls.append(f["url"])
+            candidate_keys.add(k)
             web_search_urls.add(f["url"])
 
     # Seeds last — "an idea you gave me", supplementary, never displacing a
     # search result; only tops up remaining room under `limit`.
-    seed_urls = [u for u in _read_seed_urls() if u not in seen and u not in candidate_urls]
+    seed_urls = [u for u in _read_seed_urls()
+                 if _norm_partner_key(u) not in seen_keys and _norm_partner_key(u) not in candidate_keys]
     room = max(0, limit - len(candidate_urls))
     candidate_urls += seed_urls[:room]
 
@@ -2195,15 +2486,18 @@ def _source_brand_discovery_round(limit: int, model: str, exclude_business_names
         return []
 
     fetched = []
-    attempted = []
+    unreachable = []
     for url in candidate_urls:
-        attempted.append(url)
         site = _fetch_brand_site(url)
         if site:
             site["found_via_web_search"] = url in web_search_urls
             site["discovery_source"] = discovery_source.get(url, "seed")
             fetched.append(site)
-    _mark_seen(attempted)
+        else:
+            unreachable.append(url)
+    # Seen is written at the end, once we know which fits were actually used:
+    # a good brand that only missed this week's cut must come back next week.
+    _mark_seen(unreachable)
 
     if not fetched:
         return []
@@ -2219,16 +2513,38 @@ def _source_brand_discovery_round(limit: int, model: str, exclude_business_names
         # guessed business name.
         if (_norm_partner_key(f.get("url", "")) in known_partners
                 or _norm_partner_key(name_guess) in known_partners):
+            _mark_seen([f["url"]])
             continue
         match = partner_sitemap.match_existing_partner(name_guess, slugs=partner_slugs)
         if match and match["confidence"] in ("exact", "likely"):
+            _mark_seen([f["url"]])
             continue  # already a Partner Central partner — skip outright
         f["already_partner_flag"] = match["slug"] if match else None  # "uncertain" match only, surfaced on the card
         not_onboarded.append(f)
 
     judged = judge_brand_fit(not_onboarded, model=model)
-    judged = [j for j in judged if j.get("business_name", "").strip().lower() not in exclude_business_names]
-    judged = attach_demand_evidence(judged, model=model)
+    kept_urls = {j["url"] for j in judged}
+    _mark_seen([f["url"] for f in not_onboarded if f["url"] not in kept_urls])  # judged unfit
+
+    exclude_keys = {_norm_partner_key(n) for n in exclude_business_names} | _pipeline_name_keys()
+    known_phone_tails = _pipeline_phone_tails()
+    deduped = []
+    for j in judged:
+        name = j.get("business_name") or ""
+        if _norm_partner_key(name) in exclude_keys or name.strip().lower() in exclude_business_names:
+            continue
+        tails = {re.sub(r"\D", "", p)[-9:] for p in (j.get("phones") or []) if len(re.sub(r"\D", "", p)) >= 9}
+        if tails & known_phone_tails:
+            continue  # same phone as a business already in the pipeline under another name
+        # the model's own name for the business, not just the domain guess, vs. existing partners
+        m2 = partner_sitemap.match_existing_partner(name, slugs=partner_slugs) if name else None
+        if m2 and m2["confidence"] in ("exact", "likely"):
+            _mark_seen([j["url"]])
+            continue
+        if m2 and not j.get("already_partner_flag"):
+            j["already_partner_flag"] = m2["slug"]
+        deduped.append(j)
+    judged = attach_demand_evidence(deduped, model=model)
 
     # Department cap (2026-10-02, user: "make sure weekly found is mix of
     # categories"). The per-department search above is the primary fix, but
@@ -2251,6 +2567,7 @@ def _source_brand_discovery_round(limit: int, model: str, exclude_business_names
             if i < len(by_dept[dept]):
                 interleaved.append(by_dept[dept][i])
     judged = interleaved
+    _mark_seen([j["url"] for j in judged[:limit]])
 
     out = []
     for j in judged[:limit]:
@@ -2363,7 +2680,7 @@ def search_for_missing_item(row: dict, model: str = "claude-sonnet-5", n: int = 
     seen = _load_seen()
     example_line = f'Example of what this looks like: "{row.get("example")}"\n' if row.get("example") else ""
     summary_line = f'Why this was flagged: {row.get("summary")}\n' if row.get("summary") else ""
-    exclude_block = ", ".join(sorted(seen)) if seen else "(none yet)"
+    exclude_block = _exclude_block(seen)
     prompt = _MISSING_ITEM_SEARCH_PROMPT.format(
         n=n, missing_item=row.get("missing_item", ""), example_line=example_line,
         summary_line=summary_line, exclude_block=exclude_block)
