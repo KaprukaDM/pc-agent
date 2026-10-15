@@ -1804,3 +1804,10 @@ Audit: only partner_report uses the deep like-for-like check; metrics.live_kapru
 - [x] VPS settings set: opening message, outreach template pc_kogul + name box on (whatsapp_live still 0); Nuts on Top -> chocolates.
 - [x] Restarted: first relaunch via restart_remote_app() left nothing running; started with redirected logs instead -> listening on 5011, serves chocolates/brand-sells/template box.
 
+
+## 2026-10-15 — Ranges are product families named with their defining word (user, on Oleeto: 'THE question is does kapruka sell wooden toys' / 'fix it app wide')
+Problem: Oleeto's report asked about 'toy' (VPS) / six tiny sub-ranges (laptop: pull toys, push toys...). The question is wooden toys.
+- [x] Prompt: families (not sub-types), search term carries the defining material/craft/use; method deep-v4 + version in catalog_key so EVERY report re-derives ranges and rebuilds.
+- [x] Verify on Oleeto + a mix (Wrook, Nuts on Top, Ceylon Elements, a leather brand), then rebuild all locally and on the VPS.
+- Verified: Oleeto 'wooden toys' theirs 49 vs Kapruka 45/45/46 of their kind over 3 runs (first try said 4: judge marked most wooden toys unrelated; fixed by a 'defining material must be in the title' rule). House of Leather 'leather bag' 87 -> 17 once 'genuine leather' must be in the title. Nuts on Top, Ceylon Elements, Wrook still sensible. Woo titles unescaped (Nuttin&#8217;).
+- [ ] All reports rebuild at startup (method deep-v4) locally; then push to VPS (partner_report.py) + restart there.

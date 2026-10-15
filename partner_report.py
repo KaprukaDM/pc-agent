@@ -97,7 +97,7 @@ def _woo_catalog(requests, base: str) -> dict | None:
     if not isinstance(data, list):
         return None
     total = r.headers.get("X-WP-Total")
-    titles = [p.get("name", "") for p in data if isinstance(p, dict)]
+    titles = [html.unescape(html.unescape(p.get("name", ""))) for p in data if isinstance(p, dict)]
     for page in range(2, 5):  # up to 400 titles, so each range can be counted from real names
         if len(titles) >= int(total or 0):
             break
@@ -108,7 +108,7 @@ def _woo_catalog(requests, base: str) -> dict | None:
             break
         if not isinstance(more, list) or not more:
             break
-        titles += [p.get("name", "") for p in more if isinstance(p, dict)]
+        titles += [html.unescape(html.unescape(p.get("name", ""))) for p in more if isinstance(p, dict)]
     return {"count": int(total) if total and total.isdigit() else len(titles), "titles": titles[:400],
             "source": "WooCommerce store (Store API)", "note": None}
 
@@ -516,21 +516,28 @@ QUESTIONS PC AGENT IS MEANT TO ASK (give the partner's answer to each, or null i
 {questions}
 
 Rules:
-- "product_types": 1-{max_types} of their product ranges, biggest first. Use their own shop
-  collections when listed (skip gift cards); otherwise group the store titles. Each is an object:
-    "search": the product type a shopper types into a GENERAL store's search (Kapruka sells food,
-              gifts, cosmetics, home goods...), 1-3 words, no brand. It must be UNAMBIGUOUS there:
-              a range they call "Oil" that is skincare is "face oil" or "body oil" (never just "oil",
-              which returns cooking and coconut oil); "Wax" for hair is "hair wax"; "Bars" of
-              chocolate is "chocolate bar". One-word only when it can't be misread ("candle", "soap").
+- "product_types": their PRODUCT FAMILIES, biggest first, 1-{max_types} (usually 1-4). A family is
+  what a shopper would call one kind of thing. Do NOT split one family by sub-type or design: pull
+  toys, push toys and lacing toys from a wooden-toy maker are ONE family, "wooden toys"; their
+  separate sub-lines go in "examples". Use their own shop collections when listed (skip gift cards);
+  otherwise group the store titles. Each is an object:
+    "search": the family as a shopper would type it into a GENERAL store's search (Kapruka sells food,
+              gifts, cosmetics, home goods, toys...), 1-3 words, no brand, and INCLUDING whatever
+              defines it when that is the point of the business: the material, craft or use. A wooden
+              toy maker's family is "wooden toys" (never just "toys": every toy shop has toys);
+              handmade soap is "handmade soap", a soy candle maker's is "soy candle", leather goods are
+              "leather wallet" / "leather bag", a skincare "Oil" is "face oil" (never "oil", which returns
+              cooking and coconut oil), hair "Wax" is "hair wax", chocolate "Bars" is "chocolate bar".
+              Drop the defining word only when it is not what sets them apart.
     "kind": what makes THEIR version distinct, specific enough to tell it apart from mass-market
             products in the same category, with 2-3 real examples from their titles, e.g.
             "handmade natural soap bars (Turmeric, Charcoal, Coffee Scrub)" vs supermarket soap.
     "products": how many of their products are in this range (from the collection count, or count
             the matching titles), integer or null.
     "examples": 3-5 EXACT product names from their store titles above that belong to this range.
-    "kind_terms": 1-2 short phrases (2-3 words) a shopper types to find THEIR kind specifically,
-            e.g. ["soy candle", "scented candle"] or ["artisan chocolate", "dark chocolate bar"]. No brand.
+    "kind_terms": 1-2 other phrases (2-3 words) a shopper might type for the same family, including
+            the broader category, e.g. ["wooden toy", "toddler toys"], ["soy candle", "scented candle"],
+            ["artisan chocolate", "dark chocolate bar"]. No brand.
 - "products_seen_on_website": REQUIRED when the store product titles above say "not available":
   count the DISTINCT product names the website snippets show with a price (the same product
   repeated counts once), e.g. "Rose Tea LKR 900 ... Mint Tea LKR 950 ... Rose Tea LKR 900" = 2.
@@ -635,7 +642,7 @@ def extract_profile(card: dict, catalog: dict, conversation: list[dict], questio
 KAPRUKA_PAGES_GENERIC = 6      # the site search stops at ~6 pages (measured)
 KAPRUKA_PAGES_KIND = 3
 KAPRUKA_DEEP_TYPES = 3         # biggest ranges get the deep search; Cloudflare budget
-KAPRUKA_CHECK_METHOD = "deep-v3"
+KAPRUKA_CHECK_METHOD = "deep-v4"   # v4 (2026-10-15): ranges are product families named with their defining word ("wooden toys")
 KAPRUKA_JUDGE_BATCH = 60       # titles per judge call: long lists made the judge drift (8 vs 11 run to run)
 AMBIGUOUS_SHARE = 0.6          # generic term whose results are mostly another category = ambiguous
 
@@ -713,6 +720,10 @@ THEIR products above, and put each Kapruka product id in ONE group:
       a hijab; a body lotion is not a face oil. Be fair, not strict: for handcrafted scented soy candles,
       any scented candle in a jar or tin is K; for artisanal handmade chocolate bars, premium/craft/
       couverture chocolate bars are K; for a skincare face oil, other face or facial oils are K.
+      DEFINING MATERIAL OR CRAFT: when their kind is defined by it (wooden, leather, soy wax, handmade,
+      organic, natural), K needs that word, or an obvious equivalent, in the Kapruka title. A toy that
+      doesn't say wooden is C for a wooden-toy maker; a bag that doesn't say leather is C for a leather
+      maker. Don't assume the material from the product type.
   C = SAME PRODUCT TYPE AND USE, OTHER KIND: e.g. mass-market KitKat/Snickers bars for an artisan
       chocolatier; a body lotion brand's plain drugstore lotion; plain household candles.
   X = NOT THEIR PRODUCT TYPE OR USE, even if the words match: coconut or cooking oil for a skincare
@@ -796,7 +807,8 @@ def catalog_key(catalog: dict) -> str | None:
     if not titles:
         return None
     import hashlib
-    return hashlib.sha1("\n".join(titles).encode("utf-8")).hexdigest()[:16]
+    # the method version is part of the key: a new way of naming ranges re-derives every report's ranges
+    return hashlib.sha1((KAPRUKA_CHECK_METHOD + "\n" + "\n".join(titles)).encode("utf-8")).hexdigest()[:16]
 
 
 def count_their_ranges(types: list[dict], titles: list[str], store_count: int | None) -> list[dict]:
