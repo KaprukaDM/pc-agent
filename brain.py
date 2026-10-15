@@ -136,6 +136,11 @@ def call_slots(now: _dt.datetime | None = None) -> list[str]:
     return slots
 
 
+def slot_list(slots: list[str]) -> str:
+    """Call times as a numbered list, one per line (team rule: "offer time options as a numbered list")."""
+    return "\n".join(f"{i}. {s}" for i, s in enumerate(slots, 1))
+
+
 COLOMBO_DISTRICT = ("Colombo 1-15, Dehiwala-Mount Lavinia, Moratuwa, Sri Jayawardenepura Kotte, Nugegoda, "
                     "Battaramulla, Rajagiriya, Maharagama, Kolonnawa, Kaduwela, Malabe, Kesbewa, Piliyandala, "
                     "Homagama, Padukka, Avissawella, Boralesgamuwa, Kottawa, Pannipitiya, Athurugiriya, Wellampitiya")
@@ -165,7 +170,8 @@ CONSIGNMENT_RULES = """FULFILMENT MODELS (explain these in plain words whenever 
   order comes, Kapruka packs it and delivers it. The partner does nothing per order.
 - ON-DEMAND: nothing is stored with Kapruka. When an order comes, the partner must hand the item over at
   Kapruka's office BEFORE the delivery date, and the delivery date can be as early as the next day.
-Partners inside Colombo District can use either. Partners OUTSIDE Colombo District realistically can only
+Partners inside Colombo District can use either, so do NOT ask them the consignment question; only explain
+the two options if they ask. Partners OUTSIDE Colombo District realistically can only
 do consignment (next-day delivery rules out on-demand). So if the partner is outside Colombo (or you do not
 know yet and they say so), ask: "Are you OK with consignment? That means you keep some stock at our
 warehouse in Mirihana, and we pack and deliver when an order comes." If they clearly refuse
@@ -224,7 +230,10 @@ def brief_block(partner_questions: list[str] | None = None, known: dict | None =
 After the opening, if they are interested or want to know more, collect this brief before going
 deep into registration. ONE question per message, in this order. Skip any question they have
 already answered anywhere in the chat, anything ALREADY KNOWN below (those get the one confirmation step instead), and a question whose condition
-doesn't apply. If they ask you something, answer it first (briefly), then continue.
+doesn't apply. If they ask you something (for example how registration works), answer it FIRST in this message, then continue
+the brief in a later message. Steps go in point form, one short point per line.
+For a cosmetics, skincare or personal-care business, after the location ask whether they hold a valid NMRA
+license and ask them to share the license document. Do not hand over to a person for that.
 "Colombo" means Colombo District: {COLOMBO_DISTRICT}. A place in that list is NOT outside Colombo.
 {lines}
 {known_txt}
@@ -247,14 +256,27 @@ question first, in their language: "Just to be sure, how many individual package
 have in total? Please count each variety and each pack size separately." Use "reply" for that.
 AUTO-REJECT: only when, AFTER that clarifying question, they still say they have {MIN_SKUS} or fewer
 INDIVIDUAL products/items in total: use "not_agreed" with reason "Only <N> products (minimum is
-more than {MIN_SKUS})" and a short polite closing: Kapruka is currently onboarding sellers with a
-wider range, and they're welcome to reach out again once they have more products.
+more than {MIN_SKUS})" and a warm closing: thank them for their interest and tell them we will
+contact them back. Never a flat refusal.
 A number of CATEGORIES, types, ranges or collections is NOT a product count ("3 categories:
 candles, vases and wall art" could be 60 items). Never reject on that: reply asking roughly how
 many individual items they have in total across those. Same if the number is vague or unclear.
 {CONSIGNMENT_RULES}
 === end brief ===
 """
+
+
+def final_rules_block() -> str:
+    """2026-10-15, user: the team's rules were not obeyed. They sat ABOVE the stricter brief_block and
+    action text, so those won. In the reply prompt the rules now come LAST and explicitly override
+    everything above (wording, format and tone), except the JSON output format and the safety rules."""
+    block = team_rules_block()
+    if not block:
+        return ""
+    return (block + "FINAL CHECK before you answer: re-read the team rules above. They override ANY wording, "
+            "format or tone instruction earlier in this prompt (including the brief, the brief questions, the "
+            "call-time offer and the closing messages). Apply every rule that fits this message, and only keep "
+            "the JSON output format and the non-negotiables.\n")
 
 
 def read_brief() -> str:
@@ -342,7 +364,7 @@ def build_partner_reply_prompt(category: str, department: str, partner_name: str
     conversation exists the model goes back to reasoning normally about what
     to say next, since a templated reply mid-conversation would ignore
     whatever the partner actually said."""
-    brief = read_brief()
+    brief = read_kogul_md()  # team rules are appended at the END of the prompt (see below)
     convo = format_conversation(conversation, partner_name)
 
     # 2026-10-05, user: "check if its shopify or woo commer... so if its
@@ -430,7 +452,7 @@ Actions:
     why, just so we can improve?"), in their language.
   * If they then give a reason (or refuse to), use "not_agreed" again with the real reason (or
     "declined to give a reason") and a short polite closing — this updates the stored reason.
-"""
+{final_rules_block()}"""
 
 
 _ACTIONS = {"reply", "handover", "agreed", "not_agreed"}
@@ -544,7 +566,7 @@ def guard_min_range(decision: dict, conversation: list[dict]) -> dict:
     slots = call_slots()
     return {"ok": True, "action": "reply", "reason": "", "call_slot": "", "contact_name": "",
             "message": (f"Thanks, {n} products works for us. Let's set up a quick call with our Partner Central team. "
-                        "Which time suits you: " + ", ".join(f"{i}) {s}" for i, s in enumerate(slots, 1)) + "?"),
+                        "Which time suits you?\n" + slot_list(slots)),
             "guarded": f"blocked auto-reject ({reason}): {n} items is above the minimum of {MIN_SKUS}"}
 
 
@@ -585,8 +607,8 @@ def guard_agreed_needs_slot(decision: dict, conversation: list[dict] | None = No
         return decision
     slots = call_slots()
     return {"ok": True, "action": "reply", "reason": "", "call_slot": "", "contact_name": "",
-            "message": "Great! Let's set up a quick call with our Partner Central team. Which time suits you: "
-                       + ", ".join(f"{i}) {s}" for i, s in enumerate(slots, 1)) + "?",
+            "message": "Great! Let's set up a quick call with our Partner Central team. Which time suits you?\n"
+                       + slot_list(slots),
             "guarded": "agreed without a call time: offered the 3 call slots instead"}
 
 

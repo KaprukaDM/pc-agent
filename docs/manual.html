@@ -1,0 +1,150 @@
+<!doctype html><html><head><meta charset="utf-8"><title>PC Agent (Kogul): How It Works</title>
+<style>
+body{font-family:"Segoe UI",Arial,sans-serif;color:#1f2430;font-size:10.5pt;line-height:1.5}
+h1{font-size:26pt;margin:0 0 4px;color:#4b2a8a}
+h2{font-size:15pt;color:#4b2a8a;border-bottom:2px solid #e3dcf3;padding-bottom:4px;margin:26px 0 8px;page-break-after:avoid}
+h3{font-size:11.5pt;margin:14px 0 4px;color:#33205f;page-break-after:avoid}
+p{margin:5px 0}ul,ol{margin:4px 0 6px;padding-left:20px}li{margin:2px 0}
+.sub{color:#666;font-size:11pt}
+.cover{padding:30px 0 10px;border-bottom:4px solid #4b2a8a;margin-bottom:18px}
+table{border-collapse:collapse;width:100%;margin:8px 0;font-size:9.5pt;page-break-inside:avoid}
+th{background:#4b2a8a;color:#fff;text-align:left;padding:5px 8px}
+td{border:1px solid #ddd;padding:5px 8px;vertical-align:top}
+tr:nth-child(even) td{background:#faf8fe}
+.flow{display:flex;flex-wrap:wrap;gap:6px;align-items:stretch;margin:10px 0}
+.box{background:#f1ecfb;border:1px solid #cfc2ee;border-radius:8px;padding:8px 10px;flex:1 1 28%;font-size:9.5pt;min-width:150px}
+.box b{display:block;color:#4b2a8a;margin-bottom:2px}
+.arrow{align-self:center;color:#4b2a8a;font-weight:bold}
+.note{background:#fff8e6;border-left:4px solid #e0a800;padding:6px 10px;margin:8px 0;font-size:10pt}
+code{background:#f0f0f4;padding:0 4px;border-radius:3px;font-size:9.5pt}
+.pb{page-break-before:always}
+</style></head><body>
+
+<div class="cover"><h1>PC Agent (Kogul)</h1>
+<div class="sub">How the Kapruka Partner Central onboarding agent works, end to end</div>
+<div class="sub" style="margin-top:6px">Written 15 October 2026 | Live at pricelens.lanka.info/pcagent/ (VPS port 5011) | Dev copy on the laptop at port 5010</div></div>
+
+<h2>1. What it is</h2>
+<p>PC Agent, called <b>Kogul</b> in chats, finds Sri Lankan businesses that would be good Kapruka partners, researches each one, lets the Partner Central (PC) team decide, then talks to the approved ones on WhatsApp. Every interested chat ends with a booked call with the PC team. The app is a Flask web app with a SQLite database. Partners see only Kogul; the PC team uses the web dashboard.</p>
+<div class="flow">
+<div class="box"><b>1. Find</b>Weekly search for businesses, steered by real Kapruka gaps</div><div class="arrow">&rarr;</div>
+<div class="box"><b>2. Research</b>A partner report per business: products, location, brand strength, what Kapruka already sells</div><div class="arrow">&rarr;</div>
+<div class="box"><b>3. Decide</b>The team approves or rejects (Kogul pre-rejects clear misfits)</div><div class="arrow">&rarr;</div>
+<div class="box"><b>4. Chat</b>Kogul messages on WhatsApp, collects a short brief, offers 3 call times</div><div class="arrow">&rarr;</div>
+<div class="box"><b>5. Hand over</b>Booked call, handover, decline or no reply; the team is alerted</div></div>
+
+<h2>2. Finding businesses (Weekly Outreach)</h2>
+<h3>Two equal search streams</h3>
+<ul><li><b>Open stream:</b> web search for strong independent Sri Lankan brands in a department, with no constraint.</li>
+<li><b>Gap stream:</b> web search steered by real Kapruka gaps from the Daraz demand scan (products people buy on Daraz that Kapruka lacks or has little of).</li></ul>
+<p>Each row records which stream found it (the "found via" badge). A business is only kept if it is a real brand with a website, passes a brand-fit judgement, is not already a known partner (<code>KNOWN_PARTNERS.txt</code>) and is not a duplicate of an earlier find.</p>
+<h3>Which departments get searched</h3>
+<p>There are about 14 departments (clothing, jewellery, grocery, chocolates, beauty, home, toys, books, gift sets, automobile, pet, sports, electronics, other). Only some are searched each run. They are ordered by a <b>weighted random draw</b> where the weight is 1 / (1 + number found in the last 56 days). Departments with few finds usually come first, but every department keeps a chance. Rejected finds still count as "covered", so rejecting does not push a department to the front.</p>
+<h3>Which gap inside a department</h3>
+<ol><li>Clean the Daraz gap list: drop umbrella names, accessories, generic names, off-department items and duplicates.</li>
+<li>A model scores each gap's fit for Kapruka (1 to 5, cached). The score is blended 65/35 with the gap's revenue percentile.</li>
+<li>The top 60 are clustered into groups a single shop could plausibly cover (at most 6 categories per cluster).</li>
+<li>One cluster is picked. Clusters not searched recently gain weight with age, so niche gaps (for example hijabs) eventually get their turn.</li></ol>
+<h3>Contact details</h3>
+<p>Phone numbers and WhatsApp availability are found in four stages. A <code>wa.me</code>-proven number is preferred; landlines are flagged. If a partner has two numbers, the second is used after 24 hours of silence.</p>
+
+<h2 class="pb">3. The partner report (the decision point)</h2>
+<p>Every business card gets a report <b>before</b> any message is sent. It is built in the background (3 workers; Kapruka searches run one at a time to avoid rate limits). The page shows a verdict chip, a one-line <b>"What they sell"</b> summary, and the evidence.</p>
+<table><tr><th>Part</th><th>How it is worked out</th></tr>
+<tr><td>Product count</td><td>Read from the store itself (Shopify products.json, WooCommerce store API, or sitemap), including a separate shop subdomain if the brand has one. A custom site gives only a lower bound ("at least N"), which never blocks a business.</td></tr>
+<tr><td>Product ranges</td><td>Their families of products (for example "wooden toys"), named with the defining word and counted from every store title. Fixed per catalog so counts do not swing between rebuilds.</td></tr>
+<tr><td>Location</td><td>From the website contact pages, else from a web search that must tie to the same business (phone, domain or socials). Colombo means Colombo District.</td></tr>
+<tr><td>Brand value</td><td>Facebook, Instagram and TikTok follower counts read from each profile's preview data; combined 10,000+ counts as high, plus press and stockist signals.</td></tr>
+<tr><td>Kapruka comparison</td><td>Each range is searched on kapruka.com (deep paging, up to about 180 results). A model judges every result: same kind, same type but different kind, or unrelated. The material or craft must appear in the Kapruka title ("wooden toys" is not "toys"). Ambiguous words such as "oil" are flagged. The brand name is also searched. Result: Kapruka's count of their kind against their own count.</td></tr></table>
+<h3>Verdicts</h3>
+<table><tr><th>Level</th><th>Meaning</th></tr>
+<tr><td>Lucrative partner</td><td>Fills a Kapruka gap or has a strong brand, location works, range above the minimum</td></tr>
+<tr><td>Potentially lucrative</td><td>Gap or strong brand, but location or detail not confirmed yet</td></tr>
+<tr><td>Low priority / Already sold on Kapruka</td><td>Kapruka already stocks their kind well, or the brand is already on the site</td></tr>
+<tr><td>Blocked</td><td>5 or fewer products (exact count), or outside Colombo and refusing consignment</td></tr></table>
+<div class="note"><b>Pre-screen rejection:</b> a pending business whose report is "Blocked" is rejected automatically by Kogul with the reason and appears under "Rejected by Kogul". It can be restored from the Rejections tab. Approved cards are never touched.</div>
+
+<h2 class="pb">4. Approval and the first message</h2>
+<ul><li>The team opens the report and clicks <b>Approve</b> or <b>Reject</b> (a reason is required for a rejection and trains next week's search). Approve is blocked until a report exists.</li>
+<li>Approval creates the partner row and sends the opening message: <i>"Hi {Business name} I'm Kogul from Kapruka Partner Central. Would you like to become a Kapruka Partner and boost your sales and earnings?"</i></li>
+<li><b>Live vs simulation:</b> one switch (<code>whatsapp_live</code>). When off, nothing is sent to real partners.</li>
+<li>WhatsApp allows free text only within 24 hours of the partner's last message. The first message goes as an approved template (<code>pc_kogul</code>, greeting the business by name); the Meta approval is a step on your side.</li></ul>
+
+<h2>5. How Kogul chats</h2>
+<p>Each reply is produced by GPT-4o from the instructions in <code>KOGUL.md</code>, the team rules, the brief and the conversation. The reply follows the partner's language (English, Sinhala, Tamil or Singlish) and stays short, like a real WhatsApp text.</p>
+<h3>The flow</h3>
+<ol><li><b>Opening</b> (template).</li>
+<li><b>Interest:</b> if they show interest, Kogul sends one confirmation of what research already found ("From what we found, you're in Colombo 04 with about 13 products. Is that right?"). Facts they confirm are not asked again; if they correct something, their version wins.</li>
+<li><b>The brief,</b> one question per message: what they sell, how many individual products (each variety in each size counts separately), where they are based, and, only outside Colombo, consignment.</li>
+<li><b>Call to action:</b> Kogul offers exactly 3 call times (Sri Lanka time, weekdays, 11:00 to 15:00 starts; today if at least 30 minutes away, otherwise the next working day) and asks who the team should ask for.</li>
+<li><b>Agreed:</b> only when the partner names a time in their own message. Kogul confirms, the chat is marked Agreed, and the team gets an alert with the slot and name.</li></ol>
+<h3>Consignment vs on-demand</h3>
+<table><tr><th style="width:22%">Consignment</th><td>The partner keeps stock at Kapruka's warehouse in Mirihana. Kapruka packs and delivers when an order comes.</td></tr>
+<tr><th>On-demand</th><td>Nothing is stored. When an order comes, the partner hands the item to the Kapruka office before the delivery date, which can be the next day.</td></tr></table>
+<p>Colombo partners can use either. Outside Colombo only consignment is realistic, so a clear refusal there ends the chat as "Not OK with consignment (outside Colombo)". A "maybe" is never rejected.</p>
+<h3>Minimum range</h3>
+<p>Kapruka needs <b>more than 5</b> individual products. If a partner says 5 or fewer, Kogul first asks once: <i>"How many individual packages or products do you have in total? Please count each variety and each pack size separately."</i> It rejects only if they still confirm 5 or fewer. A number of categories is never treated as a product count.</p>
+<h3>Other outcomes</h3>
+<table><tr><th>Outcome</th><th>What happens</th></tr>
+<tr><td>Not agreed</td><td>On the first decline. If no reason was given, Kogul politely asks why, then stores the real reason.</td></tr>
+<tr><td>Handover</td><td>For things only a person can answer (contract, legal, hostile or confused reply, prohibited products, cosmetics without an NMRA licence). The chat is held and the team alerted. Commission questions are first answered with an offer of a call.</td></tr>
+<tr><td>Withdraws after booking</td><td>Kogul replies politely, the call is cleared, the chat becomes Not agreed with the reason, and the team gets a "CALL CANCELLED" alert.</td></tr>
+<tr><td>Asks to reschedule</td><td>Kogul replies, holds the chat for the team, and sends a "RESCHEDULE" alert.</td></tr>
+<tr><td>Silence</td><td>A same-number nudge at 20 hours (only while the 24-hour window is open), a switch to the second number at 24 hours if there is one, and "Unresponsive" after 72 hours.</td></tr></table>
+
+<h2 class="pb">6. Code guards (rules the model cannot break)</h2>
+<p>Prompts alone failed in testing, so important rules are enforced in code after the model answers:</p>
+<table><tr><th>Guard</th><th>What it stops</th></tr>
+<tr><td>Agreed needs a slot</td><td>Marking a chat Agreed, or booking a time, before the partner names one</td></tr>
+<tr><td>Minimum range</td><td>Rejecting a partner whose own stated count is above 5 ("total 9", "3 varieties in 3 sizes")</td></tr>
+<tr><td>Clarify low count</td><td>Rejecting on a low count before the clarifying question has been asked</td></tr>
+<tr><td>Categories are not products</td><td>Rejecting on "3 categories"; asks for an item count instead</td></tr>
+<tr><td>Known facts</td><td>Re-asking things research already answered</td></tr>
+<tr><td>Marker leaks</td><td>Sending internal tags such as AGREED or NOT_AGREED to a partner</td></tr>
+<tr><td>Access guard</td><td>Remote access without the admin password; cross-site posts</td></tr></table>
+
+<h2>7. Notifications</h2>
+<p>The PC team gets an email and a WhatsApp alert (when configured) for: a booked call (with slot and contact), a handover, a cancelled call, and a reschedule request. Simulations send the same alerts, labelled <b>[SIMULATION]</b>. WhatsApp alerts outside the 24-hour window need an approved utility template with one <code>{{1}}</code> variable (setting <code>wa_alert_template</code>).</p>
+
+<h2>8. The tabs</h2>
+<table><tr><th>Tab</th><th>Use</th></tr>
+<tr><td>Dashboard</td><td>Funnel counts and the <b>By department (all time)</b> table: Found, Not yet contacted, In progress, Agreed, Not agreed, Rejected by team, Rejected by Kogul, Unresponsive</td></tr>
+<tr><td>Pipeline</td><td>Where each chat stands</td></tr>
+<tr><td>Weekly Outreach</td><td>The business cards, each with a "What they sell" line and a verdict; open a partner report; approve or reject; generate a new week</td></tr>
+<tr><td>Rejections</td><td>Two lists with reasons: rejected before outreach (team or Kogul, with a Restore button) and partners who declined (including Kogul's rule-based rejections)</td></tr>
+<tr><td>Potential Product Opportunities</td><td>Items buyers want that Kapruka lacks, with demand evidence</td></tr>
+<tr><td>Simulate as Partner</td><td>Practise chat as a fake partner (sends nothing to real people; alerts labelled [SIMULATION])</td></tr>
+<tr><td>Partner Chats</td><td>Live conversations, takeover by a human, manual status changes, handover badge</td></tr>
+<tr><td>PC Agent Settings</td><td>Opening message, brief questions, model choice, WhatsApp templates, live switch</td></tr>
+<tr><td>Partner Central Settings</td><td>Team emails and phone numbers for alerts</td></tr>
+<tr><td>Cost</td><td>Model and WhatsApp spend</td></tr>
+<tr><td>Chat with PC Agent</td><td>Ask Kogul questions about the data</td></tr></table>
+
+<h2 class="pb">9. Where things run</h2>
+<table><tr><th style="width:18%">Item</th><th>Detail</th></tr>
+<tr><td>Code</td><td>Folder <code>kogul/</code>; GitHub repository KaprukaDM/pc-agent (branch main)</td></tr>
+<tr><td>Laptop</td><td>Port 5010, for development and testing</td></tr>
+<tr><td>VPS</td><td>Port 5011 at C:\apps\kogul_project, reached publicly at pricelens.lanka.info/pcagent/ through an IIS rewrite. Sign in with any username and <code>KOGUL_ADMIN_PASSWORD</code>.</td></tr>
+<tr><td>Database</td><td>SQLite. The VPS database is the live one and is never overwritten from the laptop.</td></tr>
+<tr><td>Models</td><td>GPT-4o for chat, report summaries, counting and judging (temperature 0 where a stable answer matters). Claude CLI for brand discovery, gap clustering and web research.</td></tr>
+<tr><td>Secrets</td><td>Kept in <code>.env</code>; never printed or committed</td></tr>
+<tr><td>Deploy</td><td>Upload only changed code files, back up the old ones, restart the server detached. Do not use the full deploy script as it is: it would overwrite the VPS <code>.env</code> and live data.</td></tr></table>
+
+<h2>10. Known limits and open items</h2>
+<ul><li>"Same kind" judging leans generous, so only clear gaps show as gaps.</li>
+<li>Pakistani and Indian clothing categories can rank high in the gap list.</li>
+<li>Each weekly run searches only some departments.</li>
+<li>A custom website that builds its product list with JavaScript may give only a lower-bound count.</li>
+<li>When the low-count check turns an early rejection into a question, Kogul may skip remaining brief questions if the partner then qualifies.</li>
+<li>If the VPS reboots, the server restarts only if it is set up as a startup task (not checked).</li>
+<li><b>Waiting on you (Meta):</b> approve the <code>pc_kogul</code> template (the header variable needs a sample); register the alert template and save the team number; set <code>META_APP_SECRET</code> and <code>WA_WEBHOOK_VERIFY_TOKEN</code> on the VPS; Meta needs an https webhook address.</li></ul>
+
+<h2>11. Glossary</h2>
+<table><tr><th style="width:18%">Term</th><th>Meaning</th></tr>
+<tr><td>Card</td><td>A found business on Weekly Outreach, before any chat</td></tr>
+<tr><td>Partner</td><td>A card after approval; has a chat and a status</td></tr>
+<tr><td>Statuses</td><td>new, contacted, replied, negotiating, agreed, not_agreed, unresponsive</td></tr>
+<tr><td>Gap</td><td>A product kind with proven demand where Kapruka has none or few</td></tr>
+<tr><td>Brief</td><td>The short set of questions Kogul asks an interested partner</td></tr>
+<tr><td>Window</td><td>WhatsApp's 24 hours after a partner's last message, when free text is allowed</td></tr></table>
+</body></html>

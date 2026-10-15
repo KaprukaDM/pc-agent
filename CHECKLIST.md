@@ -1833,3 +1833,11 @@ Cause: IIS rule strips /pcagent/ and proxies to :5011, but the page used absolut
 - [x] Chat: consignment explained (stock kept at the Mirihana warehouse, Kapruka packs + delivers on order) vs on-demand (partner hands over at the office before delivery date, can be next day); outside Colombo refusing consignment -> not_agreed "Not OK with consignment (outside Colombo)". Colombo partners may use either.
 - [x] Low count: 5 or fewer -> ONE clarifying question first ("how many individual packages or products ... each variety and pack size separately"); code guard guard_clarify_low_count turns an early rejection into that question; reject only if they confirm.
 - [x] Verified with real gpt-4o (temp 0): 4 products -> clarify; confirmed 4 -> reject; 4 types x 3 sizes -> continues; Kandy refuses consignment -> reject; asks what consignment is -> explained; Nugegoda on-demand -> continues. Stats/restore/pre-screen tested on a copy of the DB.
+
+## 2026-10-15 — Team rules were not obeyed in Simulate (user)
+Cause: (1) KOGUL.md and the brief questions contradicted the rules ("No bullet lists", "Where is your business based?", no-NMRA = hand over, blunt rejection closing); (2) the rules sat ABOVE the stricter brief block / action text, so those won; (3) code-made replies (call-time offer, count guard) ignored them.
+- [x] KOGUL.md rewritten to include the rules (business location wording, warm 'we will contact you back' closing, numbered call times, point-form steps, NMRA licence document before any handover, licence/documents asked before handover).
+- [x] Team rules now go LAST in the reply prompt with an explicit override + final check (brain.final_rules_block).
+- [x] Code-made call-time offers are a numbered list, one per line; brief question reads "What is your business location?" (default + local + VPS setting).
+- [x] Consignment question no longer asked of Colombo partners; cosmetics NMRA step added to the brief.
+- [x] Verified with real gpt-4o and the 8 live rules: location wording, numbered times, thank-you decline, NMRA ask without handover, warm low-count closing.

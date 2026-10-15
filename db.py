@@ -321,7 +321,7 @@ DEFAULT_SETTINGS = {
     "brief_questions": json.dumps([
         "What products do you sell?",
         "Roughly how many individual products (SKUs) do you have? Count each item, not categories.",
-        "Where is your business based?",
+        "What is your business location?",
         "Only if they are outside Colombo: are you OK with consignment? (You keep some stock at Kapruka's warehouse in Mirihana and we pack and deliver when an order comes.)",
     ]),
     "wa_outreach_template_lang": "en_US",
