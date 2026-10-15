@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PC Agent — Partner Onboarding Agent</title>
-<link rel="icon" type="image/png" href="{{ url_for('static', filename='logo.png') }}" onerror="this.remove()">
+<link rel="icon" type="image/png" href="static/logo.png" onerror="this.remove()">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="{{ url_for('static', filename='kogul.css') }}">
+<link rel="stylesheet" href="static/kogul.css">
 </head>
 <body>
 
@@ -578,6 +578,11 @@
 </main>
 
 <script>
+// App-relative URLs: served at / locally and at /pcagent/ behind IIS on the VPS. Calls written as
+// fetch('/api/...') are resolved under the folder the page was opened from.
+const APP_BASE = location.pathname.replace(/[^/]*$/, '');
+const _nativeFetch = window.fetch.bind(window);
+window.fetch = (u, o) => _nativeFetch(typeof u === 'string' && u.startsWith('/') && !u.startsWith('//') ? APP_BASE + u.slice(1) : u, o);
 const $ = (sel, root=document) => root.querySelector(sel);
 const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
 
@@ -2397,7 +2402,7 @@ async function loadShareables() {
       <tbody>
         ${d.items.map(f => `
           <tr>
-            <td><a href="/api/shareables/${encodeURIComponent(f.name)}/file" target="_blank" rel="noopener">${escapeHtml(f.name)}</a></td>
+            <td><a href="api/shareables/${encodeURIComponent(f.name)}/file" target="_blank" rel="noopener">${escapeHtml(f.name)}</a></td>
             <td class="muted">${escapeHtml(f.description || '')}</td>
             <td class="muted">${(f.size / 1024).toFixed(0)} KB</td>
             <td><button class="btn secondary" data-name="${escapeHtml(f.name)}" style="padding:4px 10px;font-size:12px">Delete</button></td>
@@ -2912,7 +2917,7 @@ $('#btnTestAllContacts').addEventListener('click', async () => {
 (function tryLoadLogo() {
   const img = new Image();
   img.onload = () => { $('#logoBadge').innerHTML = ''; $('#logoBadge').appendChild(img); };
-  img.src = '{{ url_for("static", filename="logo.png") }}';
+  img.src = 'static/logo.png';
 })();
 
 // App-bar elevation on scroll (2026-10-03, "this aint google enough" pass) —

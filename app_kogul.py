@@ -97,7 +97,10 @@ def _access_guard():
         source = request.headers.get("Origin") or request.headers.get("Referer")
         if source:
             from urllib.parse import urlparse
-            if urlparse(source).netloc != request.host:
+            allowed = {request.host, request.headers.get("X-Forwarded-Host", "")}
+            allowed |= {h.strip() for h in (os.environ.get("KOGUL_ALLOWED_ORIGINS")
+                                           or _project_env().get("KOGUL_ALLOWED_ORIGINS") or "").split(",") if h.strip()}
+            if urlparse(source).netloc not in allowed:
                 return jsonify({"ok": False, "error": "cross-site request refused"}), 403
     if _is_local_request():
         return None

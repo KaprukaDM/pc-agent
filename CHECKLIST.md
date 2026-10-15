@@ -1811,3 +1811,9 @@ Problem: Oleeto's report asked about 'toy' (VPS) / six tiny sub-ranges (laptop: 
 - [x] Verify on Oleeto + a mix (Wrook, Nuts on Top, Ceylon Elements, a leather brand), then rebuild all locally and on the VPS.
 - Verified: Oleeto 'wooden toys' theirs 49 vs Kapruka 45/45/46 of their kind over 3 runs (first try said 4: judge marked most wooden toys unrelated; fixed by a 'defining material must be in the title' rule). House of Leather 'leather bag' 87 -> 17 once 'genuine leather' must be in the title. Nuts on Top, Ceylon Elements, Wrook still sensible. Woo titles unescaped (Nuttin&#8217;).
 - [ ] All reports rebuild at startup (method deep-v4) locally; then push to VPS (partner_report.py) + restart there.
+
+## 2026-10-15 — App works behind a sub-path (user screenshot: pricelens.lanka.info/pcagent/ unstyled, tabs HTTP 404)
+Cause: IIS rule strips /pcagent/ and proxies to :5011, but the page used absolute /static and /api paths (resolved against the site root = another app); also the cross-site guard compared Origin to Host (IIS rewrites Host to localhost:5011) so POSTs would 403.
+- [x] Static files relative; one fetch wrapper resolves '/api/...' under the page's folder (works at / and /pcagent/); guard accepts X-Forwarded-Host and KOGUL_ALLOWED_ORIGINS.
+- [x] Verified in a real browser through a stand-in for the IIS rule (strip prefix, rewrite Host, add X-Forwarded-For, Basic auth): CSS loads, 69 cards, report opens, POST reaches the route, foreign Origin -> 403, no JS errors.
+- [ ] Deploy to VPS + KOGUL_ALLOWED_ORIGINS=pricelens.lanka.info in the VPS .env + restart; verify through the real address.
