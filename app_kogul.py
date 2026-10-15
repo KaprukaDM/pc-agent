@@ -2193,6 +2193,18 @@ def _send_and_log(partner_id: int, sender: str, body: str, atts: list[dict] | No
     return {"ok": True, "sent": True, "simulated": False, "message_id": mid, "wa_message_id": wa_id}
 
 
+def _check_post_agreement(name: str, slot: str | None, conversation: list[dict], caller: str) -> dict:
+    """2026-10-15 (user's test chat): a partner who had booked a call wrote "sorry im not interested" and
+    PC Agent stayed silent, leaving the chat Agreed with the call still booked. A new message from an
+    agreed partner is read once: withdraw / reschedule / other."""
+    try:
+        raw = run_openai_chat_text(brain.build_post_agreement_prompt(name, slot, conversation), model="gpt-4o",
+                                   timeout=60, caller=caller, temperature=0)
+    except Exception:
+        return {"intent": "other", "reason": "", "message": ""}
+    return brain.parse_post_agreement(raw)
+
+
 def _auto_reply_blocked(partner) -> str | None:
     """Why PC Agent must stay quiet on this chat, or None if it may reply."""
     if partner["human_takeover"]:
@@ -2519,6 +2531,36 @@ def _do_partner_auto_reply_locked(partner_id: int, opening: bool) -> tuple[dict,
         if not partner:
             return {"ok": False, "error": "unknown partner"}, 404
         msgs = c.execute("SELECT * FROM messages WHERE partner_id = ? ORDER BY id", (partner_id,)).fetchall()
+
+    if (not opening and partner["status"] == "agreed" and not partner["human_takeover"] and msgs
+            and msgs[-1]["sender"] == "partner"):
+        verdict = _check_post_agreement(partner["name"], partner["call_slot"], [dict(m) for m in msgs],
+                                        f"kogul.post_agreement:{partner_id}")
+        if verdict["intent"] in ("withdraw", "reschedule") and verdict["message"]:
+            send = _send_and_log(partner_id, "kogul", verdict["message"])
+            slot = partner["call_slot"] or "no time recorded"
+            if verdict["intent"] == "withdraw":
+                with db.conn() as c:
+                    c.execute("UPDATE partners SET status = 'not_agreed', not_agreed_reason = ?, call_slot = NULL, "
+                              "call_contact_name = NULL, call_booked_at = NULL WHERE id = ?",
+                              (f"Withdrew after booking the call ({slot}): {verdict['reason']}", partner_id))
+                _log_message(partner_id, "system", f"Partner withdrew after booking: {verdict['reason']}. "
+                             f"Call ({slot}) cancelled; chat marked Not agreed.", simulated=True)
+                _notify_pc_team(f"CALL CANCELLED: {partner['name']} withdrew",
+                                f"{partner['name']} ({partner['concept']}) had a call booked for {slot} and has now "
+                                f"withdrawn.\n\nTheir words: {verdict['reason']}\n\nPhone: {partner['phone'] or '(none on file)'}\n"
+                                f"Please cancel the call.")
+                _notify_pc_team_whatsapp(f"CALL CANCELLED: {partner['name']} no longer interested (was {slot}). {verdict['reason']}")
+            else:
+                with db.conn() as c:
+                    c.execute("UPDATE partners SET needs_handover = 1 WHERE id = ?", (partner_id,))
+                _log_message(partner_id, "system", f"Partner asked to change the call time: {verdict['reason']}. "
+                             "Held for the team.", simulated=True)
+                _notify_pc_team(f"RESCHEDULE: {partner['name']} wants a different call time",
+                                f"{partner['name']} (booked: {slot}) asked: {verdict['reason']}\n\nPhone: {partner['phone'] or '(none on file)'}")
+                _notify_pc_team_whatsapp(f"RESCHEDULE: {partner['name']} wants a different time (was {slot}). {verdict['reason']}")
+            return {"ok": True, "auto_replied": True, "message": verdict["message"], "sent": send.get("sent", False),
+                    "action": verdict["intent"]}, 200
 
     blocked = _auto_reply_blocked(partner)
     if blocked:
@@ -2873,6 +2915,33 @@ def _run_simulation_reply(job_id: str, sim_id: int, new_msg_id: int | None = Non
             msgs = c.execute(
                 "SELECT * FROM partner_simulation_messages WHERE simulation_id = ? ORDER BY id", (sim_id,)
             ).fetchall()
+        if sim["status"] == "agreed" and not sim["needs_handover"] and msgs and msgs[-1]["sender"] == "partner":
+            verdict = _check_post_agreement(sim["business_name"], sim["call_slot"], [dict(m) for m in msgs],
+                                            f"kogul.post_agreement_sim:{sim_id}")
+            if verdict["intent"] in ("withdraw", "reschedule") and verdict["message"]:
+                _add("kogul", verdict["message"])
+                slot = sim["call_slot"] or "no time recorded"
+                if verdict["intent"] == "withdraw":
+                    with db.conn() as c:
+                        c.execute("UPDATE partner_simulations SET status = 'not_agreed', not_agreed_reason = ?, "
+                                  "call_slot = NULL, call_contact_name = NULL, call_booked_at = NULL WHERE id = ?",
+                                  (f"Withdrew after booking the call ({slot}): {verdict['reason']}", sim_id))
+                    _add("system", f"(Partner withdrew after booking: {verdict['reason']}. A real chat cancels the call "
+                                   f"({slot}), marks it Not agreed and alerts the team.)")
+                    _notify_pc_team(f"[SIMULATION] CALL CANCELLED: {sim['business_name']} withdrew",
+                                    f"[This is a Simulate-as-Partner test scenario, not a real business]\n\n"
+                                    f"Call booked for {slot} was withdrawn.\nTheir words: {verdict['reason']}\nPlease cancel the call.")
+                    _notify_pc_team_whatsapp(f"[SIMULATION] CALL CANCELLED: {sim['business_name']} no longer interested (was {slot}). {verdict['reason']}")
+                else:
+                    with db.conn() as c:
+                        c.execute("UPDATE partner_simulations SET needs_handover = 1 WHERE id = ?", (sim_id,))
+                    _add("system", f"(Partner asked to change the call time: {verdict['reason']}. A real chat is held for the team "
+                                   "and they are alerted.)")
+                    _notify_pc_team(f"[SIMULATION] RESCHEDULE: {sim['business_name']} wants a different call time",
+                                    f"[This is a Simulate-as-Partner test scenario, not a real business]\n\nBooked: {slot}\nThey asked: {verdict['reason']}")
+                    _notify_pc_team_whatsapp(f"[SIMULATION] RESCHEDULE: {sim['business_name']} wants a different time (was {slot}). {verdict['reason']}")
+                _done(message=verdict["message"], action=verdict["intent"], not_agreed=verdict["intent"] == "withdraw")
+                return
         if sim["needs_handover"] or sim["status"] == "agreed":
             why = ("waiting for a human (handover requested)" if sim["needs_handover"]
                    else "partner agreed — the Partner Central team owns this chat now")

@@ -1817,3 +1817,12 @@ Cause: IIS rule strips /pcagent/ and proxies to :5011, but the page used absolut
 - [x] Static files relative; one fetch wrapper resolves '/api/...' under the page's folder (works at / and /pcagent/); guard accepts X-Forwarded-Host and KOGUL_ALLOWED_ORIGINS.
 - [x] Verified in a real browser through a stand-in for the IIS rule (strip prefix, rewrite Host, add X-Forwarded-For, Basic auth): CSS loads, 69 cards, report opens, POST reaches the route, foreign Origin -> 403, no JS errors.
 - [ ] Deploy to VPS + KOGUL_ALLOWED_ORIGINS=pricelens.lanka.info in the VPS .env + restart; verify through the real address.
+
+## 2026-10-15 — Two chat bugs from the user's test chats
+1. "total 9" rejected as 'Only 9 products (minimum is more than 5)' (reproduced 6/6 with gpt-4o).
+- [x] Prompt: explicit COUNTING rule (3 varieties x 3 sizes = 9; more than 5 meets the minimum, even for one product type).
+- [x] Code guard guard_min_range (inside guard_auto_reject, so real chats, simulations and retries get it): a not_agreed 'Only N products' with N (or the partner's own stated count, incl. 'A varieties in B sizes' = A*B) above 5 becomes a reply offering the 3 call slots. Unit-tested edge cases (9, 5, 4, 6, '20% off', typos).
+- [x] Real-model replay of the user's chat: continues to ask location 3/3; stripped replay still wrongly rejected 3/3 but the guard caught all 3. Genuine small partners still rejected ('only 4 soaps', 'just 5 items' x2 each); '6 different soaps', '12 products' continue.
+2. Partner who had booked a call wrote 'sorry im not interested' -> PC Agent silent, chat stayed Agreed, call still booked.
+- [x] A new message from an agreed partner is read once (temp 0): withdraw -> polite reply, status not_agreed + reason, booking cleared, team alerted 'CALL CANCELLED'; reschedule -> reply, held for the team + alert; other -> quiet as before. Replies mirror Sinhala/Tamil/Singlish/English.
+- [x] Verified with real gpt-4o: classifier 7/7 (incl. Singlish 'mama ahuwa, dan wada naha'); simulation path 3/3 scenarios; real-chat path 3/3 with stubbed sends.
