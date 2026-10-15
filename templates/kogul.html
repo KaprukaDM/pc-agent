@@ -849,11 +849,13 @@ async function loadDeptStats() {
       <td>${r.in_progress}</td>
       <td>${r.agreed}</td>
       <td>${r.not_agreed}</td>
+      <td>${r.rejected_team ?? 0}</td>
+      <td>${r.rejected_kogul ?? 0}</td>
       <td>${r.unresponsive}</td>
     </tr>`;
   box.innerHTML = `
     <table>
-      <thead><tr><th>Department</th><th>Found</th><th>Not yet contacted</th><th>In progress</th><th>Agreed</th><th>Not agreed</th><th>Unresponsive</th></tr></thead>
+      <thead><tr><th>Department</th><th>Found</th><th>Not yet contacted</th><th>In progress</th><th>Agreed</th><th>Not agreed</th><th>Rejected by team</th><th>Rejected by Kogul</th><th>Unresponsive</th></tr></thead>
       <tbody>
         ${d.departments.map(r => row(r.department, r)).join('')}
         ${row('Total', d.totals, true)}
@@ -2533,11 +2535,18 @@ function renderRejectionList(box, rows, reasonKey, dateKey) {
       <div>
         <strong>${escapeHtml(r.business_name)}</strong>
         ${r.department ? `<span class="muted"> — ${escapeHtml(r.department)}</span>` : ''}
+        ${r.rejected_by === 'kogul' ? '<span class="muted"> · rejected by Kogul</span>' : ''}
         <div class="muted" style="font-size:12.5px;margin-top:2px">${escapeHtml(r[reasonKey] || '(no reason given)')}</div>
       </div>
-      <span class="muted" style="font-size:12px;white-space:nowrap">${r[dateKey] ? escapeHtml(r[dateKey]) : ''}</span>
+      <span class="muted" style="font-size:12px;white-space:nowrap">${r[dateKey] ? escapeHtml(r[dateKey]) : ''}
+        ${reasonKey === 'reject_reason' ? `<button class="btn secondary" style="margin-left:8px" onclick="restoreRejected(${r.id})">Restore</button>` : ''}</span>
     </div>
   `).join('');
+}
+
+async function restoreRejected(id) {
+  const r = await fetch('/api/categories/' + id + '/restore', {method: 'POST'});
+  if ((await r.json()).ok) loadRejections();
 }
 
 function renderTopReasons(listEl, topReasons) {

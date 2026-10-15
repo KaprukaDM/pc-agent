@@ -277,18 +277,25 @@ def api_stats_by_department():
     approved but no partner row created yet)."""
     with db.conn() as c:
         rows = c.execute(
-            """SELECT wc.department, p.status FROM weekly_categories wc
-               LEFT JOIN partners p ON p.weekly_category_id = wc.id AND p.status != 'removed'
-               WHERE wc.review_status != 'rejected'"""
+            """SELECT wc.department, wc.review_status, wc.rejected_by, p.status, p.not_agreed_reason
+               FROM weekly_categories wc
+               LEFT JOIN partners p ON p.weekly_category_id = wc.id AND p.status != 'removed'"""
         ).fetchall()
     by_dept: dict[str, dict] = {}
     for r in rows:
         d = by_dept.setdefault(r["department"], {
             "department": r["department"], "found": 0, "agreed": 0,
             "not_agreed": 0, "unresponsive": 0, "in_progress": 0, "not_yet_contacted": 0,
+            "rejected_team": 0, "rejected_kogul": 0,
         })
         d["found"] += 1
-        if r["status"] == "agreed":
+        if r["review_status"] == "rejected":
+            # 2026-10-15, user: rejections belong in this table. A business turned down before any
+            # outreach is either the team's rejection or Kogul's own pre-screen.
+            d["rejected_kogul" if r["rejected_by"] == "kogul" else "rejected_team"] += 1
+        elif r["status"] == "not_agreed" and brain.is_kogul_rule_reject(r["not_agreed_reason"]):
+            d["rejected_kogul"] += 1  # Kogul rejected it in chat: too few products / no consignment
+        elif r["status"] == "agreed":
             d["agreed"] += 1
         elif r["status"] == "not_agreed":
             d["not_agreed"] += 1
@@ -306,6 +313,8 @@ def api_stats_by_department():
         "unresponsive": sum(d["unresponsive"] for d in departments),
         "in_progress": sum(d["in_progress"] for d in departments),
         "not_yet_contacted": sum(d["not_yet_contacted"] for d in departments),
+        "rejected_team": sum(d["rejected_team"] for d in departments),
+        "rejected_kogul": sum(d["rejected_kogul"] for d in departments),
     }
     return jsonify({"ok": True, "departments": departments, "totals": totals})
 
@@ -815,8 +824,19 @@ def api_category_reject(cat_id):
         cat = c.execute("SELECT id FROM weekly_categories WHERE id = ?", (cat_id,)).fetchone()
         if not cat:
             return jsonify({"ok": False, "error": "unknown category"}), 404
-        c.execute("UPDATE weekly_categories SET review_status = 'rejected', reviewed_at = ?, reject_reason = ? WHERE id = ?",
-                   (db.now(), reason or None, cat_id))
+        c.execute("UPDATE weekly_categories SET review_status = 'rejected', reviewed_at = ?, reject_reason = ?, "
+                  "rejected_by = 'team' WHERE id = ?", (db.now(), reason or None, cat_id))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/categories/<int:cat_id>/restore", methods=["POST"])
+def api_category_restore(cat_id):
+    """Puts a rejected business back for review (a pre-screen rejection by Kogul can be wrong)."""
+    with db.conn() as c:
+        cur = c.execute("UPDATE weekly_categories SET review_status = 'pending_review', reviewed_at = NULL, "
+                        "reject_reason = NULL, rejected_by = NULL WHERE id = ? AND review_status = 'rejected'", (cat_id,))
+    if not cur.rowcount:
+        return jsonify({"ok": False, "error": "not a rejected business"}), 404
     return jsonify({"ok": True})
 
 
@@ -1456,7 +1476,7 @@ def api_rejections():
     counts, so each can actually be read."""
     with db.conn() as c:
         pc_rejected = c.execute(
-            "SELECT id, concept AS business_name, department, reject_reason, reviewed_at "
+            "SELECT id, concept AS business_name, department, reject_reason, reviewed_at, rejected_by "
             "FROM weekly_categories WHERE review_status = 'rejected' "
             "ORDER BY reviewed_at DESC"
         ).fetchall()
@@ -1484,7 +1504,8 @@ def api_rejections():
 
     return jsonify({"ok": True,
                      "pc_rejected": [dict(r) for r in pc_rejected],
-                     "partner_rejected": [dict(r) for r in partner_rejected],
+                     "partner_rejected": [{**dict(r), "rejected_by": "kogul" if brain.is_kogul_rule_reject(r["not_agreed_reason"]) else "partner"}
+                                          for r in partner_rejected],
                      "top_pc_reject_reasons": _top_reasons(pc_rejected, "reject_reason"),
                      "top_partner_reject_reasons": _top_reasons(partner_rejected, "not_agreed_reason")})
 
@@ -1961,11 +1982,30 @@ def _run_report_build(job_id: str, category_id: int, force_kapruka: bool, force_
                 (category_id, json.dumps(catalog), json.dumps(site), json.dumps(research) if research is not None else None,
                  json.dumps(profile) if profile else None,
                  json.dumps(kapruka), partner_report.terms_key(terms), "; ".join(errors) or None, len(conv), db.now()))
+        _prescreen_reject(category_id, profile, catalog, kapruka, research)
         with _JOBS_LOCK:
             _JOBS[job_id] = {"status": "done", "error": "; ".join(errors) or None}
     except Exception as e:
         with _JOBS_LOCK:
             _JOBS[job_id] = {"status": "error", "error": str(e)[:300]}
+
+
+def _prescreen_reject(category_id: int, profile: dict, catalog: dict, kapruka, research) -> None:
+    """2026-10-15, user: Kogul rejects while pre-screening. A pending business whose report says it can't
+    work (a real, exact product count at or below the minimum, or outside Colombo and refusing consignment)
+    is rejected with the reason and shown as "Rejected by Kogul". Only pending cards, never approved ones;
+    a website count that is only a lower bound never blocks (see lucrative_verdict). Reversible via Restore."""
+    try:
+        verdict = partner_report.lucrative_verdict(profile or {}, catalog, kapruka, research)
+        if verdict.get("level") != "blocked":
+            return
+        reason = (verdict.get("reasons") or [verdict.get("label") or "Blocked by the pre-screen"])[0]
+        with db.conn() as c:
+            c.execute("UPDATE weekly_categories SET review_status = 'rejected', reviewed_at = ?, reject_reason = ?, "
+                      "rejected_by = 'kogul' WHERE id = ? AND review_status = 'pending_review'",
+                      (db.now(), f"Kogul pre-screen: {reason}", category_id))
+    except Exception:
+        pass  # a pre-screen bug must never fail a report build
 
 
 def _start_report_build(category_id: int, force_kapruka: bool = False, force_site: bool = False) -> str:

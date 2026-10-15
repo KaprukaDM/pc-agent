@@ -322,7 +322,7 @@ DEFAULT_SETTINGS = {
         "What products do you sell?",
         "Roughly how many individual products (SKUs) do you have? Count each item, not categories.",
         "Where is your business based?",
-        "Only if they are outside Colombo: are you OK with consignment, sending stock to Kapruka's warehouse?",
+        "Only if they are outside Colombo: are you OK with consignment? (You keep some stock at Kapruka's warehouse in Mirihana and we pack and deliver when an order comes.)",
     ]),
     "wa_outreach_template_lang": "en_US",
     "wa_outreach_template_name": "",  # "1" = template has one variable, filled with the business name
@@ -421,6 +421,10 @@ def _migrate(c: sqlite3.Connection) -> None:
         # getting rjected... so agent should learn from that when doing
         # weekly outreach" — see the column comment in CREATE TABLE above.
         c.execute("ALTER TABLE weekly_categories ADD COLUMN reject_reason TEXT")
+    if "rejected_by" not in cols:
+        # 2026-10-15, user: team rejections and Kogul's own pre-screen rejections both show on the
+        # Dashboard's By-department table. NULL on old rows = the team (only humans could reject before).
+        c.execute("ALTER TABLE weekly_categories ADD COLUMN rejected_by TEXT")
 
     pcols = {r["name"] for r in c.execute("PRAGMA table_info(partners)")}
     if "is_specialist" not in pcols:

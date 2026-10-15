@@ -160,6 +160,45 @@ def _skip_known(questions: list[str], known: dict) -> list[str]:
     return out
 
 
+CONSIGNMENT_RULES = """FULFILMENT MODELS (explain these in plain words whenever you ask about consignment):
+- CONSIGNMENT: the partner keeps a stock of their products at Kapruka's warehouse in Mirihana. When an
+  order comes, Kapruka packs it and delivers it. The partner does nothing per order.
+- ON-DEMAND: nothing is stored with Kapruka. When an order comes, the partner must hand the item over at
+  Kapruka's office BEFORE the delivery date, and the delivery date can be as early as the next day.
+Partners inside Colombo District can use either. Partners OUTSIDE Colombo District realistically can only
+do consignment (next-day delivery rules out on-demand). So if the partner is outside Colombo (or you do not
+know yet and they say so), ask: "Are you OK with consignment? That means you keep some stock at our
+warehouse in Mirihana, and we pack and deliver when an order comes." If they clearly refuse
+consignment and are outside Colombo, use "not_agreed" with reason "Not OK with consignment (outside
+Colombo)" and a short polite closing (they are welcome to reach out if that changes). If they are unsure,
+explain once and let them think; do not reject on a "maybe"."""
+
+_KOGUL_RULE_RE = re.compile(r"^\s*(only\s+\d+\s+products?|not ok with consignment)", re.I)
+
+
+def is_kogul_rule_reject(reason: str | None) -> bool:
+    """True when a not_agreed reason is one of Kogul's own rules (below the minimum range, or no
+    consignment outside Colombo) rather than the partner simply declining."""
+    return bool(_KOGUL_RULE_RE.match(reason or ""))
+
+
+_ASKED_COUNT_RE = re.compile(r"individual packages?", re.I)
+
+
+def guard_clarify_low_count(decision: dict, conversation: list[dict]) -> dict:
+    """2026-10-15, user: a partner who says they have fewer than 5 gets ONE follow-up ("how many
+    individual packages do you have") before Kogul rejects. If the model rejects on a low count and no
+    earlier PC Agent message already asked that, the rejection is turned into the clarifying question."""
+    if decision.get("action") != "not_agreed" or not re.match(r"^\s*only\s+\d+\s+products?", decision.get("reason") or "", re.I):
+        return decision
+    if any(m.get("sender") == "kogul" and _ASKED_COUNT_RE.search(m.get("body") or "") for m in conversation or []):
+        return decision
+    return {"ok": True, "action": "reply", "reason": "", "call_slot": "", "contact_name": "",
+            "message": "Just to be sure, how many individual packages or products do you have in total? "
+                       "Please count each variety and each pack size separately.",
+            "guarded": f"asked to clarify the item count before rejecting ({decision.get('reason')})"}
+
+
 def brief_block(partner_questions: list[str] | None = None, known: dict | None = None,
                 slots: list[str] | None = None) -> str:
     """2026-10-14, user's flow: opening -> if interested, request a brief
@@ -203,13 +242,17 @@ Keep it soft: no pressure, one mention per message.
 COUNTING: every variety in every size or pack is its own item (3 varieties in 3 sizes = 9 items).
 More than {MIN_SKUS} items MEETS the minimum, even if they all sell one kind of product (e.g. chilli
 powder): never reject a partner with {MIN_SKUS + 1} or more items, just continue to the next step.
-AUTO-REJECT: only when they clearly say they have {MIN_SKUS} or fewer INDIVIDUAL products/items in
-total (e.g. "we only have 4 soaps"): use "not_agreed" with reason "Only <N> products (minimum is
+LOW COUNT: when they say they have {MIN_SKUS} or fewer items, do NOT reject yet. Ask ONE clarifying
+question first, in their language: "Just to be sure, how many individual packages or products do you
+have in total? Please count each variety and each pack size separately." Use "reply" for that.
+AUTO-REJECT: only when, AFTER that clarifying question, they still say they have {MIN_SKUS} or fewer
+INDIVIDUAL products/items in total: use "not_agreed" with reason "Only <N> products (minimum is
 more than {MIN_SKUS})" and a short polite closing: Kapruka is currently onboarding sellers with a
 wider range, and they're welcome to reach out again once they have more products.
 A number of CATEGORIES, types, ranges or collections is NOT a product count ("3 categories:
 candles, vases and wall art" could be 60 items). Never reject on that: reply asking roughly how
 many individual items they have in total across those. Same if the number is vague or unclear.
+{CONSIGNMENT_RULES}
 === end brief ===
 """
 
@@ -511,6 +554,7 @@ def guard_auto_reject(decision: dict, conversation: list[dict]) -> dict:
     model auto-rejects while the partner's latest message talks about
     categories/types/ranges, turn it into a question about item count."""
     decision = guard_min_range(decision, conversation)
+    decision = guard_clarify_low_count(decision, conversation)
     if decision.get("action") != "not_agreed" or not _AUTO_REJECT_RE.match(decision.get("reason") or ""):
         return decision
     last_partner = next((m.get("body") or "" for m in reversed(conversation) if m.get("sender") == "partner"), "")
