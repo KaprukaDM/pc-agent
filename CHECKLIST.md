@@ -1798,3 +1798,9 @@ Audit: only partner_report uses the deep like-for-like check; metrics.live_kapru
 - [x] Verify the lines on real cards (Nuts on Top, Wrook, Ceylon Elements, a few others).
 - Verified: 69/69 cards got a specific line (e.g. Nuts on Top: 'Handmade small-batch Sri Lankan chocolate bars and seasonal truffle collections'); DOM shows the line on all 69 cards and in the report header, no JS errors.
 - Category checker (metrics.live_kapruka_check) now uses the same engine; found+fixed: Daraz-title-derived search words were wrong ('cap turban head' for Hijabs, 'light tea' for Soy Candles) -> category name leads; judge needed same-intended-user rule (baby turban hat is not a hijab): Hijabs now 0 of their kind = real opportunity; Soy Candles 46 covered. Partner-report regression rerun: Wrook 44 vs 49, Ceylon face oil 1 vs 7 (stricter), consistent.
+
+## 2026-10-15 — Pushed to VPS (user: 'can push everything to vps')
+- [x] Uploaded only changed code (10 files, verified byte-for-byte, backups in C:\apps\kogul_project\_backup_20261015-0847); did NOT run deploy_kogul_to_vps.py (it uploads the laptop .env over the VPS .env = would wipe KOGUL_ADMIN_PASSWORD, and overwrites live data json).
+- [x] VPS settings set: opening message, outreach template pc_kogul + name box on (whatsapp_live still 0); Nuts on Top -> chocolates.
+- [x] Restarted: first relaunch via restart_remote_app() left nothing running; started with redirected logs instead -> listening on 5011, serves chocolates/brand-sells/template box.
+
