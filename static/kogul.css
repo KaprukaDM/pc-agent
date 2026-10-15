@@ -979,4 +979,4 @@ body.no-scroll { overflow: hidden; }
 .brand-sells { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--surface-alt); }
 .brand-sells .lbl { display: block; font-weight: 500; color: var(--text-faint); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; }
 .brand-sells strong { font-size: 15px; font-weight: 600; line-height: 1.45; color: var(--text); }
-.rpt-sells { font-size: 15px; font-weight: 600; color: var(--text); margin: 2px 0 6px; line-height: 1.4; }
+.rpt-sells { font-size: 15px; font-weight: 500; color: #fff; margin: 2px 0 8px; line-height: 1.4; }  /* on the purple report header */
