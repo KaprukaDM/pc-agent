@@ -550,10 +550,16 @@ Rules:
 - "consignment": "yes"/"no" if the partner answered whether they're OK with consignment (sending
   stock to Kapruka's warehouse), else "unknown".
 - "about": 2 plain sentences on what the business is and sells. No marketing words.
+- "sells": ONE short line (under 14 words) saying very specifically WHAT they sell, the way a shopper
+  would describe it: the product, how it is made or sourced, and what sets it apart. Good:
+  "Handmade small-batch chocolate bars and truffles", "Scented soy wax candles in glass jars",
+  "Imported Korean skincare (serums, sunscreens)", "Handcrafted leather wallets and belts".
+  Bad: "chocolates", "quality products", "a lifestyle brand". Only what the facts above show; no adjectives
+  like premium or luxury.
 - "analysis": only if there is a real conversation (a partner message exists), else null.
 
 Output ONLY JSON:
-{{"about": "...", "product_types": [{{"search": "...", "kind": "...", "products": null, "kind_terms": ["..."], "examples": ["..."]}}], "sku_count_stated": null, "location": null,
+{{"about": "...", "sells": "...", "product_types": [{{"search": "...", "kind": "...", "products": null, "kind_terms": ["..."], "examples": ["..."]}}], "sku_count_stated": null, "location": null,
 "location_source": null, "in_colombo": "unknown", "consignment": "unknown", "products_seen_on_website": null,
 "answers": [{{"question": "<exactly as listed>", "answer": "<their answer, short>" or null}}],
 "analysis": {{"summary": "<2 sentences on where the chat stands>", "interest_level": "high|medium|low|unclear",
@@ -601,6 +607,7 @@ def extract_profile(card: dict, catalog: dict, conversation: list[dict], questio
     norm = lambda v, ok: v if v in ok else "unknown"
     return {
         "about": (data.get("about") or "").strip(),
+        "sells": (str(data.get("sells") or "").strip().rstrip(".") or None),
         "product_types": types,
         "sku_count_stated": sku,
         "products_seen_on_website": (data.get("products_seen_on_website")
@@ -701,7 +708,9 @@ Their actual products in this range include: {examples}
 Below are products Kapruka.com sells today, from Kapruka's own search. Compare LIKE FOR LIKE with
 THEIR products above, and put each Kapruka product id in ONE group:
   K = SAME KIND: someone wanting one of THEIR products would accept this instead. Same product type,
-      same use, similar style or positioning. Be fair, not strict: for handcrafted scented soy candles,
+      same use, SAME INTENDED USER (adults vs babies, men vs women) and similar style or positioning.
+      Sharing a shape, material or word is not enough: a baby turban hat or a handloom shawl is not
+      a hijab; a body lotion is not a face oil. Be fair, not strict: for handcrafted scented soy candles,
       any scented candle in a jar or tin is K; for artisanal handmade chocolate bars, premium/craft/
       couverture chocolate bars are K; for a skincare face oil, other face or facial oils are K.
   C = SAME PRODUCT TYPE AND USE, OTHER KIND: e.g. mass-market KitKat/Snickers bars for an artisan
@@ -761,6 +770,24 @@ Output ONLY JSON mapping each product id to a range id or "none", e.g. {{"t0": "
 def terms_key(types: list[dict]) -> str:
     """What the Kapruka search depends on (not their counts): a change here reruns it."""
     return json.dumps([[t.get("search"), t.get("kind_terms") or [], t.get("examples") or []] for t in types or []])
+
+
+def derive_sells(name: str, profile: dict) -> str | None:
+    """The "what they sell" line for a report built before that field existed, from the facts already
+    in its profile (about + product ranges with examples). One cheap call, temperature 0."""
+    ranges = "; ".join(f"{t.get('kind') or t.get('search')}" for t in (profile.get("product_types") or []))
+    facts = f"About: {profile.get('about') or '(none)'}\nProduct ranges: {ranges or '(none)'}"
+    prompt = (f"Business: {name}\n{facts}\n\nWrite ONE short line (under 14 words) saying very specifically WHAT they "
+              "sell, the way a shopper would describe it: the product, how it is made or sourced, and what sets it apart. "
+              'Good: "Handmade small-batch chocolate bars and truffles", "Scented soy wax candles in glass jars". '
+              'Bad: "chocolates", "quality products". Only what the facts show; no words like premium or luxury. '
+              "Output only the line.")
+    try:
+        out = run_openai_chat_text(prompt, model="gpt-4o", timeout=40, caller="kogul.partner_report_sells", temperature=0)
+    except Exception:
+        return None
+    out = (out or "").strip().strip('"').rstrip(".")
+    return out or None
 
 
 def catalog_key(catalog: dict) -> str | None:

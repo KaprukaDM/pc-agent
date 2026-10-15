@@ -1762,6 +1762,7 @@ def _report_summary(c, category_id: int) -> dict:
     skus, src = partner_report.effective_skus(profile, catalog, research)
     v = partner_report.lucrative_verdict(profile, catalog, kapruka, research)
     return {"built": True, "queued": queued, "level": v["level"], "label": v["label"], "skus": skus,
+            "sells": profile.get("sells"),
             "sku_lower_bound": bool(src and "at least" in src), "location": profile.get("location"),
             "in_colombo": profile.get("in_colombo"),
             "gaps": sum(1 for k in partner_report.split_kapruka(kapruka)[0] if k.get("verdict") in ("none", "thin")),
@@ -1832,6 +1833,7 @@ def _upgrade_existing_reports() -> None:
                 "JOIN weekly_categories wc ON wc.id = r.category_id WHERE wc.source = 'brand_discovery' "
                 "AND wc.review_status = 'pending_review' AND r.research_json IS NOT NULL").fetchall()
         rebuild = []
+        _backfill_sells()
         for r in rows:
             research = _loads(r["research_json"], {})
             if research and not any(f.get("read") for f in research.get("followers") or []) \
@@ -1853,6 +1855,24 @@ def _upgrade_existing_reports() -> None:
             _queue_report_builds(rebuild)
     except Exception as e:
         print(f"[report upgrade] {e}")
+
+
+def _backfill_sells() -> None:
+    """Reports built before 2026-10-15 have no "what they sell" line: derive it from their saved profile."""
+    with db.conn() as c:
+        rows = c.execute("SELECT r.category_id, r.profile_json, wc.concept FROM card_reports r "
+                         "JOIN weekly_categories wc ON wc.id = r.category_id "
+                         "WHERE r.profile_json IS NOT NULL").fetchall()
+    for r in rows:
+        prof = _loads(r["profile_json"], {})
+        if not prof or prof.get("sells"):
+            continue
+        line = partner_report.derive_sells(r["concept"], prof)
+        if line:
+            prof["sells"] = line
+            with db.conn() as c:
+                c.execute("UPDATE card_reports SET profile_json = ? WHERE category_id = ?",
+                          (json.dumps(prof, ensure_ascii=False), r["category_id"]))
 
 
 def _run_report_build(job_id: str, category_id: int, force_kapruka: bool, force_site: bool) -> None:

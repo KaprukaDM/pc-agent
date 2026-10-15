@@ -974,3 +974,9 @@ body.no-scroll { overflow: hidden; }
 .kap-cmp small { display: block; font-size: 11px; color: var(--text-dim); overflow-wrap: anywhere; }
 .kap-amb { color: var(--amber); }
 @media (max-width: 560px) { .kap-cmp { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* "What they sell": one specific line, first thing on the card and the report (2026-10-15) */
+.brand-sells { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--surface-alt); }
+.brand-sells .lbl { display: block; font-weight: 500; color: var(--text-faint); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; }
+.brand-sells strong { font-size: 15px; font-weight: 600; line-height: 1.45; color: var(--text); }
+.rpt-sells { font-size: 15px; font-weight: 600; color: var(--text); margin: 2px 0 6px; line-height: 1.4; }

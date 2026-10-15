@@ -1223,6 +1223,9 @@ function renderCategories() {
           ` : ''}
         </div>
 
+        ${isBrand && ((cat.report && cat.report.sells) || cat.products_to_bring_in) ? `
+          <div class="brand-sells"><span class="lbl">What they sell</span><strong>${escapeHtml((cat.report && cat.report.sells) || cat.products_to_bring_in)}</strong></div>
+        ` : ''}
         ${isBrand && cat.products_to_bring_in ? `
           <div class="brand-section"><span class="lbl">What we'd bring onto Kapruka</span><div class="val">${escapeHtml(cat.products_to_bring_in)}</div></div>
         ` : ''}
@@ -3098,7 +3101,7 @@ function renderPartnerReport(d) {
 
   // Partner brief: every item, its value, and where it came from.
   const brief = [
-    {q: 'What they sell', a: pr.about || p.products_to_bring_in, src: pr.about ? 'website + store' : 'website'},
+    {q: 'What they sell', a: pr.sells ? (pr.about ? `${pr.sells}. ${pr.about}` : pr.sells) : (pr.about || p.products_to_bring_in), src: pr.about ? 'website + store' : 'website'},
     {q: 'How many products (SKUs)', a: skuText ? `${skuText}${skuBelow ? ` (below the minimum of more than ${d.min_skus})` : ''}${skuLower ? ' (exact count to confirm in chat)' : ''}` : null,
      src: d.sku_source, extra: pr.sku_count_stated != null && d.catalog && d.catalog.count != null && pr.sku_count_stated !== d.catalog.count
        ? `partner said ${fmtNum(pr.sku_count_stated)}` : null},
@@ -3118,6 +3121,7 @@ function renderPartnerReport(d) {
       <div class="rpt-title">
         <div class="rpt-kicker">Partner report · ${escapeHtml(d.department_label)}</div>
         <h2>${escapeHtml(p.name || p.concept)}</h2>
+        ${pr.sells ? `<div class="rpt-sells">${escapeHtml(pr.sells)}</div>` : ''}
         <div class="rpt-links">
           ${p.url ? `<a class="link" target="_blank" rel="noopener" href="${safeUrl(p.url)}">${escapeHtml(p.url.replace(/^https?:\/\//, '').replace(/\/$/, ''))} ↗</a>` : '<span class="muted">no website on file</span>'}
           ${p.ecommerce_platform ? `<span class="badge tag">${escapeHtml(p.ecommerce_platform)}</span>` : ''}

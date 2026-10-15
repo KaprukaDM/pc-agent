@@ -238,14 +238,17 @@ def live_kapruka_check(concept: str, daraz_match: dict | None) -> dict:
     match back in as a hit."""
     import urllib.parse
     import kapruka_live_verify as klv
+    import partner_report as pr
 
-    concept_words = klv._wordset(concept)
     daraz_titles = _daraz_product_names(daraz_match["slug"], n=12) if daraz_match else []
     derived_term = klv.derive_category_search_term(concept, daraz_titles) if daraz_titles else None
 
-    # Build one term per source, deduped, order preserved (first source to
-    # produce a given term wins the slot — doesn't change what's searched,
-    # just avoids running the exact same query twice).
+    # Terms to search, one per source, deduped (derived from Daraz titles, the Daraz URL slug,
+    # the raw concept). 2026-10-15 (user: "change it app wide"): the count now comes from the
+    # SAME like-for-like engine as the Partner Report (partner_report.kapruka_check): the main
+    # term is read to the last results page (not just page 1), the other terms are searched too,
+    # and every Kapruka product is judged against what this category really is (the concept plus
+    # Daraz's own example products), so "oil" for skin care no longer counts cooking oil.
     candidate_terms: list[str] = []
     if derived_term:
         candidate_terms.append(derived_term)
@@ -254,43 +257,40 @@ def live_kapruka_check(concept: str, daraz_match: dict | None) -> dict:
         if slug_term:
             candidate_terms.append(slug_term)
     candidate_terms.append(concept)
-    seen_terms = set()
-    search_terms = []
+    seen_terms, search_terms = set(), []
     for t in candidate_terms:
         key = t.lower().strip()
         if key and key not in seen_terms:
             seen_terms.add(key)
             search_terms.append(t)
 
-    primary_term = derived_term if derived_term else concept
+    # The category's own name leads. Words derived from Daraz product titles are only extra search
+    # terms, and only when they share a word with the category: "cap turban head" (for Hijabs: baby
+    # turban hats) and "light tea" (for Soy Candles: tea lights) were found wrong live 2026-10-15.
+    primary_term = concept
+    cw = klv._wordset(concept)
+    kind_terms = [t for t in search_terms if t.lower() != concept.lower() and (klv._wordset(t) & cw)][:2]
+    rng = {"search": primary_term, "kind": f"{concept} (the product category, as Daraz sells it)",
+           "kind_terms": kind_terms, "examples": daraz_titles[:5]}
+    try:
+        res = pr.kapruka_check([rng])
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200], "live_product_count": None, "search_terms_tried": [],
+                "primary_term": primary_term, "sample_titles": [], "category_exists": None,
+                "existing_profile": None, "verdict": "check_failed"}
+    k = res[0] if res else {"verdict": "failed", "error": "no result"}
+    if k.get("verdict") == "failed":
+        return {"ok": False, "error": k.get("error"), "live_product_count": None, "search_terms_tried": [],
+                "primary_term": primary_term, "sample_titles": [], "category_exists": None,
+                "existing_profile": None, "verdict": "check_failed"}
 
-    union_products: dict[str, dict] = {}  # keyed by product URL, deduped across all terms
-    terms_tried_detail = []
-    for term in search_terms:
-        search_url = f"{klv.SEARCH_URL}?d={urllib.parse.quote(term)}#{urllib.parse.quote(term)}"
-        try:
-            result = klv.smart_live_search(term)
-        except Exception as e:
-            terms_tried_detail.append({"term": term, "search_url": search_url, "ok": False, "error": str(e), "count": 0})
-            continue
-        if not result.get("ok"):
-            terms_tried_detail.append({"term": term, "search_url": search_url, "ok": False,
-                                        "error": result.get("error"), "count": 0})
-            continue
-        products = result.get("products", [])
-        # Re-filter against the CONCEPT's words, not this term's own words —
-        # see docstring: a noisy/narrower term's own relevance pass is not
-        # the same claim as "relevant to the category".
-        on_concept = [p for p in products if klv._is_relevant_title(p.get("title"), concept_words)]
-        for p in on_concept:
-            key = p.get("url") or p.get("title")
-            if key and key not in union_products:
-                union_products[key] = p
-        terms_tried_detail.append({"term": term, "search_url": search_url, "ok": True,
-                                    "error": None, "count": len(on_concept)})
-
-    count = len(union_products)
-    sample_titles = [p["title"] for p in list(union_products.values())[:8]]
+    count = k["count"]
+    terms_tried_detail = [{"term": t.split(" (")[0], "ok": True, "error": None,
+                           "search_url": f"{klv.SEARCH_URL}?d={urllib.parse.quote(t.split(' (')[0])}",
+                           "count": None} for t in (k.get("terms_tried") or [])]
+    if terms_tried_detail:
+        terms_tried_detail[0]["count"] = count
+    sample_titles = [x["title"] for x in (k.get("samples") or [])[:8]]
 
     try:
         profile = klv.find_existing_profile(primary_term)
@@ -310,6 +310,7 @@ def live_kapruka_check(concept: str, daraz_match: dict | None) -> dict:
         verdict = "covered"
 
     return {"ok": True, "error": None, "live_product_count": count,
+             "category_product_count": k.get("category_count"),
              "search_terms_tried": terms_tried_detail, "primary_term": primary_term,
              "sample_titles": sample_titles, "category_exists": category_exists,
              "existing_profile": profile, "verdict": verdict}

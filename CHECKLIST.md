@@ -1787,3 +1787,14 @@ Measured: old check read only page 1 of Kapruka search (<=20 results) then kept 
 - [x] Verify on Wrook, Nuts on Top, and an oil/skincare brand.
 - Verified end-to-end through the app build (real Kapruka + gpt-4o): Wrook candle theirs 38 vs Kapruka 49 their kind (30 other kind, 102 not counted). Ceylon Elements 'Oil' range searched as 'face oil' (flagged ambiguous), theirs 11 vs Kapruka 7 -> real gap; face wash theirs 3 vs 5 -> thin. Nuts on Top chocolate bar theirs 3 vs Kapruka 71 their kind; truffles 3 vs 37. Rebuilt twice: identical (ranges reused per catalog).
 - Bugs found by testing and fixed: 'theirs' was 3 for every range (range description carried 3 example names, model counted only those); truffle count swung 85 -> 39 between runs (ranges re-extracted each rebuild) -> ranges now fixed per store catalog; judge at temperature 0 in batches of 60.
+
+## 2026-10-15 — Kapruka gap comparison app-wide (user: 'change it app wide' -> chose 'The Kapruka gap comparison')
+Audit: only partner_report uses the deep like-for-like check; metrics.live_kapruka_check (legacy category-card checker, no current caller) still read page 1 + word matching. Expand Catalog hints / card evidence quote Opportunity-Tool page counts (not a search) — noted, not changed.
+- [x] metrics.live_kapruka_check delegates to partner_report.kapruka_check (one engine).
+- [x] Verify it on real categories (Hijabs, a facial-oil concept) vs old behaviour.
+
+## 2026-10-15 — 'What they sell' line on every partner card + report (user: 'what do they sell - is it handmade chocolates like very specific kinda thing')
+- [x] extract_profile returns 'sells' (one specific line); old reports backfilled by derive_sells at startup; card + report header + brief show it.
+- [x] Verify the lines on real cards (Nuts on Top, Wrook, Ceylon Elements, a few others).
+- Verified: 69/69 cards got a specific line (e.g. Nuts on Top: 'Handmade small-batch Sri Lankan chocolate bars and seasonal truffle collections'); DOM shows the line on all 69 cards and in the report header, no JS errors.
+- Category checker (metrics.live_kapruka_check) now uses the same engine; found+fixed: Daraz-title-derived search words were wrong ('cap turban head' for Hijabs, 'light tea' for Soy Candles) -> category name leads; judge needed same-intended-user rule (baby turban hat is not a hijab): Hijabs now 0 of their kind = real opportunity; Soy Candles 46 covered. Partner-report regression rerun: Wrook 44 vs 49, Ceylon face oil 1 vs 7 (stricter), consistent.
