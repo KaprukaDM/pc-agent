@@ -421,6 +421,10 @@ def _migrate(c: sqlite3.Connection) -> None:
         # getting rjected... so agent should learn from that when doing
         # weekly outreach" — see the column comment in CREATE TABLE above.
         c.execute("ALTER TABLE weekly_categories ADD COLUMN reject_reason TEXT")
+    if "followup_id" not in cols:
+        # 2026-10-17, user: "Push to human follow-up" sends the business to the PC Follow-up tracker
+        c.execute("ALTER TABLE weekly_categories ADD COLUMN followup_id INTEGER")
+        c.execute("ALTER TABLE weekly_categories ADD COLUMN followup_pushed_at TEXT")
     if "rejected_by" not in cols:
         # 2026-10-15, user: team rejections and Kogul's own pre-screen rejections both show on the
         # Dashboard's By-department table. NULL on old rows = the team (only humans could reject before).

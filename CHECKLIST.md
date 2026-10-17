@@ -1841,3 +1841,9 @@ Cause: (1) KOGUL.md and the brief questions contradicted the rules ("No bullet l
 - [x] Code-made call-time offers are a numbered list, one per line; brief question reads "What is your business location?" (default + local + VPS setting).
 - [x] Consignment question no longer asked of Colombo partners; cosmetics NMRA step added to the brief.
 - [x] Verified with real gpt-4o and the 8 live rules: location wording, numbered times, thank-you decline, NMRA ask without handover, warm low-count closing.
+
+## 2026-10-17 — PC Agent <-> PC Follow-up link (user)
+- [x] PC Agent header: "PC Follow-up" button -> https://pricelens.lanka.info/pc-followup/. Follow-up tracker header: "PC Agent" button -> https://pricelens.lanka.info/pcagent/.
+- [x] "Push to human follow-up" next to Approve/Reject on the card and in the partner report. POST /api/categories/<id>/push_followup -> tracker POST /api/intake (own token PC_FOLLOWUP_INTAKE_TOKEN, no login session). Lands as stage 'contact' (Not contacted) with company, phone (site phone or wa.me number), website, products line, and a note (verdict, products, location, brand value, department). A repeat push returns the existing entry; the card then shows "In follow-up, open".
+- [x] Verified locally (temp copies of both DBs): push, duplicate push, wrong token 403, Playwright clicked the report button, link shown, no JS errors.
+- [ ] Deploy: VPS unreachable from this laptop on 2026-10-17 (all ports time out on the IP; the public site itself is up). Needs: tracker files + run.bat with PC_FOLLOWUP_INTAKE_TOKEN (scripts/deploy_pc_followup_to_vps.py), kogul files, and PC_FOLLOWUP_INTAKE_TOKEN + PC_FOLLOWUP_INTERNAL_URL=http://127.0.0.1:5066 in C:\apps\kogul_project\.env.

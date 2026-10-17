@@ -829,6 +829,58 @@ def api_category_reject(cat_id):
     return jsonify({"ok": True})
 
 
+FOLLOWUP_PUBLIC_URL = "https://pricelens.lanka.info/pc-followup/"
+
+
+def _followup_cfg() -> tuple[str, str, str]:
+    cfg = _project_env()
+    internal = (os.environ.get("PC_FOLLOWUP_INTERNAL_URL") or cfg.get("PC_FOLLOWUP_INTERNAL_URL") or "http://127.0.0.1:5065").rstrip("/")
+    token = os.environ.get("PC_FOLLOWUP_INTAKE_TOKEN") or cfg.get("PC_FOLLOWUP_INTAKE_TOKEN") or ""
+    public = (os.environ.get("PC_FOLLOWUP_PUBLIC_URL") or cfg.get("PC_FOLLOWUP_PUBLIC_URL") or FOLLOWUP_PUBLIC_URL).rstrip("/") + "/"
+    return internal, token, public
+
+
+@app.route("/api/categories/<int:cat_id>/push_followup", methods=["POST"])
+def api_category_push_followup(cat_id):
+    """2026-10-17, user: a "Push to human follow-up" button next to Approve / Reject. Sends the business and
+    what we know to the PC Follow-up tracker as 'Not contacted'. A repeat push reuses the existing entry."""
+    card = _report_card(cat_id)
+    if not card:
+        return jsonify({"ok": False, "error": "unknown business"}), 404
+    internal, token, public = _followup_cfg()
+    if not token:
+        return jsonify({"ok": False, "error": "PC_FOLLOWUP_INTAKE_TOKEN is not set in .env"}), 503
+    with db.conn() as c:
+        summ = _report_summary(c, cat_id)
+    phones = _loads(card.get("brand_phones"), []) or []
+    phone = phones[0] if phones else (f"+{card['brand_whatsapp']}" if card.get("brand_whatsapp") else (card.get("phone") or ""))
+    products = (summ.get("sells") or card.get("products_to_bring_in") or "").strip()
+    facts = [f"Verdict: {summ.get('label')}" if summ.get("built") else "",
+             f"Products: {summ['skus']}" if summ.get("skus") else "",
+             f"Location: {summ['location']}" if summ.get("location") else "",
+             f"Brand value: {summ['brand_value']}" if summ.get("brand_value") else "",
+             f"Department: {card.get('department')}" if card.get("department") else "",
+             f"Why a fit: {card['worth_pursuing_reason']}" if (card.get("worth_pursuing_reason") or "").strip()[:1] not in ("", "(") else ""]
+    payload = {"company": card.get("concept"), "phone": phone, "website": card.get("business_url") or "",
+               "products": products, "contact_name": "", "note": "\n".join(x for x in facts if x)}
+    import urllib.request
+    req = urllib.request.Request(internal + "/api/intake", data=json.dumps(payload).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "X-Intake-Token": token})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            out = json.loads(resp.read().decode())
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"could not reach the follow-up tracker: {str(e)[:150]}"}), 502
+    if not out.get("ok"):
+        return jsonify({"ok": False, "error": out.get("error") or "follow-up tracker refused it"}), 502
+    tail = (out.get("path") or "").rsplit("/partner/", 1)[-1]
+    link = public + "partner/" + tail if tail else public
+    with db.conn() as c:
+        c.execute("UPDATE weekly_categories SET followup_id = ?, followup_pushed_at = ? WHERE id = ?",
+                  (out.get("id"), db.now(), cat_id))
+    return jsonify({"ok": True, "duplicate": bool(out.get("duplicate")), "url": link})
+
+
 @app.route("/api/categories/<int:cat_id>/restore", methods=["POST"])
 def api_category_restore(cat_id):
     """Puts a rejected business back for review (a pre-screen rejection by Kogul can be wrong)."""
@@ -1817,7 +1869,7 @@ def _report_payload(category_id: int) -> dict | None:
         "partner": {k: card.get(k) for k in ("partner_id", "name", "concept", "department", "url", "phone", "status",
                                               "review_status", "needs_handover", "human_takeover", "not_agreed_reason",
                                               "ecommerce_platform", "products_to_bring_in", "worth_pursuing_reason",
-                                              "last_message_at", "source", "call_slot", "call_contact_name")},
+                                              "last_message_at", "source", "call_slot", "call_contact_name", "followup_id")},
         "department_label": brain.department_label(card.get("department")),
         "images": _loads(card.get("brand_images"), [])[:4],
         "pipeline": _report_pipeline(card, msgs, profile, skus),

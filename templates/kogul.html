@@ -18,6 +18,7 @@
   <span class="pill">Partner Onboarding</span>
   <span class="tagline">Partner-onboarding researcher &amp; outreach agent</span>
   <span class="mode-banner sim" id="modeBanner" role="status">Simulation mode — nothing is sent to partners</span>
+  <a class="btn secondary" id="btnGoFollowup" href="https://pricelens.lanka.info/pc-followup/" target="_blank" rel="noopener" style="margin-left:auto">PC Follow-up →</a>
 </header>
 
 <nav class="tabs" id="mainTabs" role="tablist" aria-label="Sections">
@@ -656,7 +657,12 @@ async function readJson(r) {
   return {ok: false, error: `HTTP ${r.status}${r.statusText ? ' ' + r.statusText : ''}`};
 }
 async function jget(url) {
-  try { return await readJson(await fetch(url)); }
+  try {
+    const r = await fetch(url);
+    const out = await readJson(r);
+    if (!r.ok && out && typeof out.error === 'string' && /^HTTP \d+/.test(out.error)) out.error += ` (${url})`;
+    return out;
+  }
   catch (e) { return {ok: false, error: 'network error: ' + (e.message || e)}; }
 }
 async function jpost(url, body) {
@@ -1314,6 +1320,7 @@ function renderCategories() {
         <div class="brand-actions brand-decide">
           ${reportSummaryChip(cat.report)}
           <button class="btn" data-report="${cat.id}">Open partner report to decide →</button>
+          ${followupButton(cat.id, cat.followup_id, 'card')}
         </div>
       ` : cat.review_status === 'pending_review' ? `
         <div class="brand-actions">
@@ -1359,6 +1366,7 @@ function renderCategories() {
 
   $$('[data-approve]', box).forEach(btn => btn.addEventListener('click', () => approveCategory(btn.dataset.approve, btn)));
   $$('[data-reject]', box).forEach(btn => btn.addEventListener('click', () => rejectCategory(btn.dataset.reject, btn.dataset.name)));
+  $$('[data-followup-card]', box).forEach(btn => btn.addEventListener('click', () => pushToFollowup(btn.dataset.followupCard, btn)));
   $$('[data-remove-partner]', box).forEach(btn => btn.addEventListener('click', () => removePartner(btn.dataset.removePartner, btn)));
 }
 
@@ -1403,6 +1411,22 @@ async function approveCategory(catId, btn) {
 
 // A reason is required: it is the only thing that teaches next week's
 // sourcing what to avoid (see brand_discovery._recent_reject_reasons).
+const FOLLOWUP_URL = "https://pricelens.lanka.info/pc-followup/";
+function followupButton(catId, pushedId, where) {
+  if (pushedId) return `<a class="btn secondary" href="${FOLLOWUP_URL}partner/${pushedId}" target="_blank" rel="noopener">✓ In follow-up, open</a>`;
+  const attr = where === 'card' ? `data-followup-card="${catId}"` : 'data-rpt="followup"';
+  return `<button type="button" class="btn secondary" ${attr}>Push to human follow-up</button>`;
+}
+async function pushToFollowup(catId, btn) {
+  btn.disabled = true; const old = btn.textContent; btn.textContent = 'Pushing…';
+  const r = await jpost(`/api/categories/${catId}/push_followup`, {});
+  if (!r.ok) { btn.disabled = false; btn.textContent = old; showToast('Push failed: ' + (r.error || 'unknown error'), 'error'); return; }
+  showToast(r.duplicate ? 'Already in PC Follow-up.' : 'Pushed to PC Follow-up as Not contacted.', 'success');
+  const a = document.createElement('a');
+  a.className = 'btn secondary'; a.href = r.url; a.target = '_blank'; a.rel = 'noopener'; a.textContent = '✓ In follow-up, open';
+  btn.replaceWith(a);
+}
+
 async function rejectCategory(catId, name) {
   const raw = window.prompt(`Why reject ${name || 'this business'}? (required — PC Agent uses this to avoid similar ones next time)`);
   if (raw === null) return;  // Cancel = don't reject
@@ -3153,6 +3177,7 @@ function renderPartnerReport(d) {
       <div class="rpt-decide-btns">
         <button type="button" class="btn" data-rpt="approve" data-is-brand="1" data-name="${escapeHtml(p.concept || '')}">Approve → reach out</button>
         <button type="button" class="btn secondary" data-rpt="reject">Reject</button>
+        ${followupButton(p.category_id || _reportCid, p.followup_id, 'rpt')}
       </div></div>` : ''}
 
     ${v ? `<div class="rpt-verdict lvl-${v.level}">
@@ -3306,6 +3331,7 @@ async function onReportClick(e) {
   if (act === 'rekapruka') return buildPartnerReport({force_kapruka: true});
   if (act === 'approve') { await approveCategory(cid, t); return refreshPartnerReport(); }
   if (act === 'reject') { await rejectCategory(cid, d.partner.concept); return refreshPartnerReport(); }
+  if (act === 'followup') { await pushToFollowup(cid, t); return; }
   if (act === 'suggest') {
     t.disabled = true; t.textContent = 'Suggesting…';
     const r = await jpost(`/api/cards/${cid}/questions/suggest`, {});
