@@ -1023,16 +1023,20 @@ def _open_web_search_for_brands(n: int, exclude_urls: set[str], model: str) -> l
                           f"actually missing.")
     else:
         missing_block = ""
-    prompt = _OPEN_SEARCH_PROMPT.format(n=n, exclude_block=exclude_block, missing_block=missing_block)
+    # 2026-10-19: asking one web-search call for 10 businesses ran past its 240 s limit on the VPS ("Open
+    # search failed or timed out"). One call now asks for at most 6, with a longer limit; the extra rounds in
+    # source_brand_discovery cover any shortfall.
+    ask = min(n, 6)
+    prompt = _OPEN_SEARCH_PROMPT.format(n=ask, exclude_block=exclude_block, missing_block=missing_block)
     try:
-        raw = run_claude_cli_with_search(prompt, model=model, timeout=240)
+        raw = run_claude_cli_with_search(prompt, model=model, timeout=420)
         found = extract_json(raw)
         res = [{"url": f["url"].strip(), "why_found": f.get("why_found") or "", "search_department": None}
                for f in found if isinstance(f, dict) and f.get("url")]
-        _ev(f"Open search returned {len(res)} site(s)")
+        _ev(f"Open search returned {len(res)} site(s)" + (f" (asked for {ask}, the most one search is asked for)" if n > ask else ""))
         return res
-    except Exception:
-        _ev("Open search failed or timed out", "warn")
+    except Exception as e:
+        _ev(f"Open search failed: {str(e)[:200]}", "warn")
         return []
 
 
