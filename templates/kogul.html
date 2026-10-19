@@ -18,7 +18,7 @@
   <span class="pill">Partner Onboarding</span>
   <span class="tagline">Partner-onboarding researcher &amp; outreach agent</span>
   <span class="mode-banner sim" id="modeBanner" role="status">Simulation mode — nothing is sent to partners</span>
-  <a class="btn secondary" id="btnGoFollowup" href="https://pricelens.lanka.info/pc-followup/" target="_blank" rel="noopener" style="margin-left:auto">PC Follow-up →</a>
+  <a class="btn" id="btnGoFollowup" href="https://pricelens.lanka.info/pc-followup/" target="_blank" rel="noopener" style="margin-left:auto;background:rgba(255,255,255,.16);color:#fff;border:1px solid rgba(255,255,255,.55);text-decoration:none">PC Follow-up →</a>
 </header>
 
 <nav class="tabs" id="mainTabs" role="tablist" aria-label="Sections">
@@ -29,6 +29,7 @@
   <button data-tab="missingitems"><svg class="tab-icon" viewBox="0 0 24 24"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm1 15h-2v-2h2zm0-4h-2V7h2z"/></svg>Potential Product Opportunities</button>
   <button data-tab="simulate"><svg class="tab-icon" viewBox="0 0 24 24"><path d="M9 12a4 4 0 100-8 4 4 0 000 8zm0 2c-2.67 0-8 1.34-8 4v2h9.29A6.97 6.97 0 019 16c0-.73.1-1.39.29-2H9zm9.5-3.5c1.38 0 2.5-1.12 2.5-2.5S19.88 5.5 18.5 5.5 16 6.62 16 8s1.12 2.5 2.5 2.5zM18.5 12c-1.84 0-5.5.92-5.5 2.75V16h11v-1.25c0-1.83-3.66-2.75-5.5-2.75z"/></svg>Simulate as Partner</button>
   <button data-tab="partnerchats"><svg class="tab-icon" viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>Partner Chats<span id="handoverBadge" class="tab-badge" hidden></span></button>
+  <button data-tab="log"><svg class="tab-icon" viewBox="0 0 24 24"><path d="M4 5h16v2H4V5zm0 6h16v2H4v-2zm0 6h10v2H4v-2z"/></svg>Log</button>
   <button data-tab="settings"><svg class="tab-icon" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.5.5 0 00.12-.61l-1.92-3.32a.5.5 0 00-.6-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.5.5 0 00-.5-.42h-3.84a.5.5 0 00-.5.42l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.5.5 0 00-.6.22L2.66 8.87a.5.5 0 00.12.61l2.03 1.58c-.05.3-.08.63-.08.94s.02.64.07.94l-2.03 1.58a.5.5 0 00-.12.61l1.92 3.32c.14.24.42.33.6.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.28.27.42.5.42h3.84c.24 0 .46-.19.5-.42l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.24.09.47 0 .6-.22l1.92-3.32a.5.5 0 00-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>PC Agent Settings</button>
   <button data-tab="pcsettings"><svg class="tab-icon" viewBox="0 0 24 24"><path d="M12 2L4 6v6c0 5.1 3.4 9.7 8 11 4.6-1.3 8-5.9 8-11V6l-8-4zm0 2.2L18 7v5c0 4.1-2.6 7.9-6 8.9-3.4-1-6-4.8-6-8.9V7l6-2.8z"/><path d="M11 8h2v5h-2zm0 6h2v2h-2z"/></svg>Partner Central Settings</button>
   <button data-tab="costs"><svg class="tab-icon" viewBox="0 0 24 24"><path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z"/></svg>Cost</button>
@@ -163,6 +164,11 @@
         <button class="btn secondary" id="btnBackfillDemandEvidence">Backfill demand evidence</button>
         <button class="btn secondary" id="btnBackfillImages">Refresh business images</button>
         <span class="muted" id="genStatus"></span>
+      </div>
+      <div id="genLogPanel" class="log-panel" hidden>
+        <div class="log-panel-head"><strong>Search log</strong> <span class="muted" id="genLogState"></span>
+          <a href="#log" class="muted" style="margin-left:auto" onclick="switchTab('log');return false">Open the full Log →</a></div>
+        <div id="genLogLines" class="log-lines"></div>
       </div>
       <p class="muted">Sourced from the Opportunity Tool's category-gap data, ranked by search volume, with Google Ads / GSC / Daraz revenue proxy (overseas excluded) / live Kapruka product-count metrics computed per category. The underlying data has known noise (cricket-match/brand-name rows sometimes rank as top "opportunities") — <strong>each category needs your approval before PC Agent sources partners for it.</strong></p>
       <div class="toolbar" style="margin-top:12px">
@@ -507,6 +513,24 @@
        "kogul.*" caller tags, plus WhatsApp template sends × a user-set rate
        (Meta's marketing-conversation rate varies by country/time, so it's
        never hardcoded/guessed — see the "WhatsApp template rate" setting). -->
+  <!-- ===================================================== Log -->
+  <section id="tab-log">
+    <div class="page-heading">
+      <h2>Log</h2>
+      <span class="muted">Is it running, and what has it done? Business search, reports, outreach and alerts, newest first. Refreshes every 10 seconds.</span>
+    </div>
+    <div class="stat-grid" id="logStatus"></div>
+    <div class="card">
+      <div class="toolbar">
+        <div id="logFilters" class="log-filters"></div>
+        <label class="muted"><input type="checkbox" id="logErrorsOnly"> Problems only</label>
+        <span class="spacer"></span>
+        <span class="muted" id="logUpdated"></span>
+      </div>
+      <div id="logRows" class="log-rows"><p class="muted">Loading...</p></div>
+    </div>
+  </section>
+
   <section id="tab-costs">
     <div class="page-heading">
       <h2>Cost</h2>
@@ -614,6 +638,7 @@ function switchTab(tabName, pushHash) {
     dashboard: loadDashboard, pipeline: loadPipeline, categories: loadCategories, koguchat: loadKoguChat,
     simulate: () => { loadTeamRules(); return loadSimulationList(); }, partnerchats: loadPartnerList, settings: loadSettings,
     pcsettings: loadSettings, costs: loadCosts, missingitems: loadMissingItems, rejections: loadRejections,
+    log: loadLog,
   };
   if (loaders[tabName]) safeLoad(tabName, loaders[tabName]);
 }
@@ -718,13 +743,13 @@ async function jpostFiles(url, fields, files) {
   try { return await readJson(await fetch(url, {method: 'POST', body: fd})); }
   catch (e) { return {ok: false, error: 'network error: ' + (e.message || e)}; }
 }
-async function pollJob(url, onTick) {
+async function pollJob(url, onTick, maxPolls = 300) {
   // onTick(secondsElapsed) — optional, called after every poll so a caller
   // can show live progress (2026-10-05, user: "when stimulating the chat i
   // want to see live status - interested to see whether it is working
   // fine" — the old static "PC Agent is typing..." never changed, so a slow
   // or hung call looked identical to one still genuinely working).
-  for (let i = 0; i < 300; i++) {
+  for (let i = 0; i < maxPolls; i++) {
     const j = await jget(url);
     if (onTick) onTick(i * 2);
     if (j.status === 'done' || j.status === 'error') return j;
@@ -1223,7 +1248,7 @@ function renderCategories() {
           ${isBrand && cat.ecommerce_platform === 'shopify' ? `<span class="badge agreed" title="Detected Shopify on their site — Kapruka's Partner Central has a fast, few-click Shopify integration, a genuine selling point for this business">Shopify — quick integration</span>` : ''}
         </div>
 
-        ${isBrand ? `<span class="brand-headline">${escapeHtml(cat.concept)}</span>` : `<span class="brand-headline" style="font-size:17px">${escapeHtml(cat.concept)}</span><span class="brand-sub">${escapeHtml(cat.department)}</span>`}
+        ${isBrand ? `<span class="brand-headline">${escapeHtml(cat.concept)}${foundDateHtml(cat.created_at)}</span>` : `<span class="brand-headline" style="font-size:17px">${escapeHtml(cat.concept)}</span><span class="brand-sub">${escapeHtml(cat.department)}</span>`}
         <div class="brand-sub">
           ${isBrand && cat.business_url ? `
             <a class="link" target="_blank" rel="noopener" href="${safeUrl(cat.business_url)}">Visit website ↗</a>
@@ -1412,6 +1437,16 @@ async function approveCategory(catId, btn) {
 // A reason is required: it is the only thing that teaches next week's
 // sourcing what to avoid (see brand_discovery._recent_reject_reasons).
 const FOLLOWUP_URL = "https://pricelens.lanka.info/pc-followup/";
+function fmtFoundDate(ts) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(ts || '');
+  if (!m) return '';
+  const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m[2] - 1];
+  return `${+m[3]} ${mon} ${m[1]}`;
+}
+function foundDateHtml(ts) {
+  const t = fmtFoundDate(ts);
+  return t ? `<span class="found-date" title="The day this business was found">Found ${escapeHtml(t)}</span>` : '';
+}
 function followupButton(catId, pushedId, where) {
   if (pushedId) return `<a class="btn secondary" href="${FOLLOWUP_URL}partner/${pushedId}" target="_blank" rel="noopener">✓ In follow-up, open</a>`;
   const attr = where === 'card' ? `data-followup-card="${catId}"` : 'data-rpt="followup"';
@@ -1440,10 +1475,22 @@ async function rejectCategory(catId, name) {
 $('#btnGenerateWeek').addEventListener('click', async () => {
   $('#btnGenerateWeek').disabled = true;
   $('#genStatus').textContent = 'Searching for businesses...';
+  let logTimer = null;
   try {
     const start = await jpost('/api/weekly/generate', {});
     if (!start.ok) { $('#genStatus').textContent = 'Error: ' + start.error; $('#btnGenerateWeek').disabled = false; return; }
-    const result = await pollJob('/api/weekly/generate/poll/' + start.job_id);
+    $('#genLogPanel').hidden = false;
+    $('#genLogState').textContent = 'running...';
+    $('#genLogLines').innerHTML = '<div class="muted">Started. Waiting for the first lines...</div>';
+    const showLines = async () => {
+      const d = await jget('/api/activity?kind=find&limit=60&run=' + start.job_id);
+      if (d.ok && d.rows.length) $('#genLogLines').innerHTML = d.rows.slice().reverse().map(logLineHtml).join('');
+    };
+    logTimer = setInterval(showLines, 3000);
+    const result = await pollJob('/api/weekly/generate/poll/' + start.job_id, null, 1800);  // a full search can run 20+ minutes
+    clearInterval(logTimer); logTimer = null;
+    await showLines();
+    $('#genLogState').textContent = result.status === 'done' ? 'finished' : 'failed';
     if (result.status === 'done') {
       // 2026-10-03: a top-up run (batch already existed for this week) adds
       // to the existing list rather than creating a new one — see
@@ -1458,6 +1505,7 @@ $('#btnGenerateWeek').addEventListener('click', async () => {
       $('#genStatus').textContent = 'Error: ' + result.error;
     }
   } finally {
+    if (logTimer) clearInterval(logTimer);
     $('#btnGenerateWeek').disabled = false;
   }
 });
@@ -2543,6 +2591,57 @@ $('#btnSaveWaRate').addEventListener('click', async () => {
 });
 
 // ------------------------------------------------------------- Rejections
+// 2026-10-19, user: "a log to find more business when clicked and a log tab to see the status of business
+// reaching out, to make sure it's running and the activity".
+const LOG_KINDS = [['all', 'Everything'], ['find', 'Finding businesses'], ['report', 'Reports'], ['outreach', 'Outreach & chats'],
+                   ['alert', 'Team alerts'], ['team', 'Team actions'], ['system', 'System']];
+let logKind = 'all', logTimerTab = null;
+function logLineHtml(r) {
+  const t = (r.ts || '').replace('T', ' ').slice(5, 19);
+  const cls = r.level === 'error' ? 'err' : r.level === 'warn' ? 'warn' : '';
+  return `<div class="log-line ${cls}"><span class="log-ts">${escapeHtml(t)}</span><span class="log-kind k-${escapeHtml(r.kind)}">${escapeHtml(r.kind)}</span><span class="log-msg">${escapeHtml(r.message)}</span></div>`;
+}
+function ago(ts) {
+  if (!ts) return 'never';
+  const s = (Date.now() - new Date(ts.replace(' ', 'T')).getTime()) / 1000;
+  if (!isFinite(s)) return ts;
+  if (s < 90) return 'just now';
+  if (s < 5400) return Math.round(s / 60) + ' min ago';
+  if (s < 172800) return Math.round(s / 3600) + ' h ago';
+  return Math.round(s / 86400) + ' days ago';
+}
+async function loadLog() {
+  const f = $('#logFilters');
+  if (!f.dataset.ready) {
+    f.innerHTML = LOG_KINDS.map(([k, l]) => `<button type="button" class="chip${k === logKind ? ' active' : ''}" data-k="${k}">${l}</button>`).join('');
+    f.addEventListener('click', e => { const b = e.target.closest('[data-k]'); if (!b) return; logKind = b.dataset.k;
+      $$('#logFilters .chip').forEach(x => x.classList.toggle('active', x === b)); loadLog(); });
+    $('#logErrorsOnly').addEventListener('change', loadLog);
+    f.dataset.ready = '1';
+  }
+  const [st, d] = await Promise.all([
+    jget('/api/activity/status'),
+    jget('/api/activity?limit=300' + (logKind !== 'all' ? '&kind=' + logKind : '') + ($('#logErrorsOnly').checked ? '&level=error' : '')),
+  ]);
+  if (!st.ok) throw new Error(st.error || 'status failed');
+  const sched = st.scheduler.last_tick ? `checked ${ago(st.scheduler.last_tick)}` : 'not run yet';
+  const card = (n, l, cls) => `<div class="stat ${cls || ''}"><div class="n" style="font-size:22px">${n}</div><div class="l">${l}</div></div>`;
+  $('#logStatus').innerHTML =
+    card(st.live ? 'LIVE' : 'Simulation', st.live ? 'Real WhatsApp messages are being sent' : 'Nothing is sent to real partners', st.live ? 'agreed' : 'unresponsive') +
+    card('Up since ' + escapeHtml((st.started_at || '').replace('T', ' ').slice(5, 16)), 'Server is running') +
+    card(st.scheduler.last_error ? 'Error' : sched, 'Follow-up timer (nudges, 72h unresponsive)' + (st.scheduler.last_error ? ': ' + escapeHtml(st.scheduler.last_error) : ''), st.scheduler.last_error ? 'not-agreed' : '') +
+    card(st.find_running ? 'Searching now' : (st.last_find ? ago(st.last_find.ts) : 'never'), 'Last business search' + (st.last_find ? ': ' + escapeHtml(st.last_find.message.slice(0, 70)) : ''), st.find_running ? 'agreed' : '') +
+    card(`${st.reports_building} building, ${st.reports_queued} waiting`, 'Partner reports') +
+    card(`${st.day.sent} sent, ${st.day.replies} replies`, 'Last 24 hours' + (st.day.simulated ? ` (+${st.day.simulated} simulated)` : '') + (st.day.failed ? `, ${st.day.failed} FAILED` : ''), st.day.failed ? 'not-agreed' : '') +
+    card(ago(st.last_partner_message), 'Last partner reply') +
+    card(st.webhook_last ? ago(st.webhook_last) : 'none yet', 'Last WhatsApp webhook received') +
+    card(`${st.pending_review} to review, ${st.chats_waiting} chats open`, 'Waiting on people') +
+    card(String(st.errors_24h), 'Problems in the last 24 hours', st.errors_24h ? 'not-agreed' : '');
+  $('#logRows').innerHTML = d.ok && d.rows.length ? d.rows.map(logLineHtml).join('') : '<p class="muted">Nothing logged yet for this filter.</p>';
+  $('#logUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  if (!logTimerTab) logTimerTab = setInterval(() => { if (document.querySelector('#tab-log.active')) loadLog().catch(() => {}); }, 10000);
+}
+
 // 2026-10-13, user: "have a rejection tab, 2 sections - pc team rejected
 // before reaching out - why / partner rejecting te proposition - why" —
 // consolidates two previously-scattered rejection systems: weekly_categories
@@ -3157,7 +3256,7 @@ function renderPartnerReport(d) {
     <div class="rpt-head">
       ${d.images && d.images.length ? `<img class="rpt-avatar" src="${escapeHtml(d.images[0])}" alt="" referrerpolicy="no-referrer" onerror="this.remove()">` : '<div class="rpt-avatar rpt-avatar-blank">🏷️</div>'}
       <div class="rpt-title">
-        <div class="rpt-kicker">Partner report · ${escapeHtml(d.department_label)}</div>
+        <div class="rpt-kicker">Partner report · ${escapeHtml(d.department_label)}${p.created_at ? ' · Found ' + escapeHtml(fmtFoundDate(p.created_at)) : ''}</div>
         <h2>${escapeHtml(p.name || p.concept)}</h2>
         ${pr.sells ? `<div class="rpt-sells">${escapeHtml(pr.sells)}</div>` : ''}
         <div class="rpt-links">

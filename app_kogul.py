@@ -561,6 +561,9 @@ def _run_weekly_generate(job_id: str, week: str, num_cats: int, per_cat: int,
     below already covers every business ever stored for ANY batch
     (regardless of status), so a previously-rejected business from this
     same batch can't silently reappear in the top-up."""
+    db.ACTIVE_RUN["find"] = job_id
+    _t_find = time.time()
+    db.log_event("find", f"Find more businesses started: looking for {num_cats} (week of {week})", run_id=job_id)
     try:
         with db.conn() as c:
             prior_keys = {r["concept"] for r in c.execute("SELECT DISTINCT concept FROM weekly_categories").fetchall()}
@@ -648,12 +651,19 @@ def _run_weekly_generate(job_id: str, week: str, num_cats: int, per_cat: int,
         # 2026-10-14, user: "the partner report should be filled before reaching out
         # / partner report is the decision point" — build every new card's report now.
         _queue_report_builds(new_ids)
+        _names = ", ".join((p.get("concept") or "?") for _s, p, _m in chosen)
+        db.log_event("find", f"Done in {round(time.time() - _t_find)}s: {inserted} business(es) added" + (f" ({_names})" if _names else "")
+                     + (f". Brand discovery error: {brand_discovery_error}" if brand_discovery_error else ""),
+                     level="warn" if (brand_discovery_error or not inserted) else "info", run_id=job_id)
+        db.ACTIVE_RUN["find"] = None
 
         with _JOBS_LOCK:
             _JOBS[job_id] = {"status": "done", "error": None, "batch_id": batch_id,
                               "inserted": inserted, "skipped_well_stocked": skipped_well_stocked,
                               "brand_discovery_error": brand_discovery_error}
     except Exception as e:
+        db.log_event("find", f"Find more businesses failed: {str(e)[:300]}", level="error", run_id=job_id)
+        db.ACTIVE_RUN["find"] = None
         with _JOBS_LOCK:
             _JOBS[job_id] = {"status": "error", "error": str(e), "batch_id": None}
 
@@ -689,6 +699,8 @@ def api_category_approve(cat_id):
     per_cat = batch["partners_per_category"] if batch else int(db.get_settings().get("partners_per_category", 4))
 
     job_id = uuid.uuid4().hex
+    db.log_event("team", f"Team approved {cat['concept']}: sourcing the partner and sending the opening message"
+                 + ("" if _wa_live() else " (simulation mode: it will be logged, not sent)"), ref_type="card", ref_id=cat_id)
     with _JOBS_LOCK:
         _JOBS[job_id] = {"status": "running", "error": None}
     threading.Thread(target=_run_category_approve, args=(job_id, cat_id, dict(cat), per_cat), daemon=True).start()
@@ -826,6 +838,7 @@ def api_category_reject(cat_id):
             return jsonify({"ok": False, "error": "unknown category"}), 404
         c.execute("UPDATE weekly_categories SET review_status = 'rejected', reviewed_at = ?, reject_reason = ?, "
                   "rejected_by = 'team' WHERE id = ?", (db.now(), reason or None, cat_id))
+    db.log_event("team", f"Team rejected card {cat_id}: {reason}", ref_type="card", ref_id=cat_id)
     return jsonify({"ok": True})
 
 
@@ -878,7 +891,64 @@ def api_category_push_followup(cat_id):
     with db.conn() as c:
         c.execute("UPDATE weekly_categories SET followup_id = ?, followup_pushed_at = ? WHERE id = ?",
                   (out.get("id"), db.now(), cat_id))
+    db.log_event("team", f"{card.get('concept')} pushed to PC Follow-up" + (" (already there)" if out.get("duplicate") else ""),
+                 ref_type="card", ref_id=cat_id)
     return jsonify({"ok": True, "duplicate": bool(out.get("duplicate")), "url": link})
+
+
+@app.route("/api/activity")
+def api_activity():
+    """The Log tab / the live panel under "Find more businesses". Newest first; `run` = one search run."""
+    kind = (request.args.get("kind") or "").strip()
+    level = (request.args.get("level") or "").strip()
+    run = (request.args.get("run") or "").strip()
+    try:
+        limit = max(1, min(int(request.args.get("limit", 200)), 1000))
+    except ValueError:
+        limit = 200
+    where, params = [], []
+    if kind and kind != "all":
+        where.append("kind = ?"); params.append(kind)
+    if level:
+        where.append("level = ?"); params.append(level)
+    if run:
+        where.append("run_id = ?"); params.append(run)
+    sql = "SELECT * FROM activity_log" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY id DESC LIMIT ?"
+    with db.conn() as c:
+        rows = [dict(r) for r in c.execute(sql, (*params, limit)).fetchall()]
+    return jsonify({"ok": True, "rows": rows})
+
+
+@app.route("/api/activity/status")
+def api_activity_status():
+    """Is it running? Heartbeats and recent counts for the Log tab's status cards."""
+    with _JOBS_LOCK:
+        find_running = [j for j in _JOBS.values() if j.get("status") == "running" and "batch_id" in j]
+    with _report_queue_lock:
+        queued = len(_report_queue)
+        building = len(_report_taken)
+    with db.conn() as c:
+        last_find = c.execute("SELECT ts, message, level FROM activity_log WHERE kind='find' AND (message LIKE 'Done in%' "
+                              "OR message LIKE 'Find more businesses failed%') ORDER BY id DESC LIMIT 1").fetchone()
+        last_in = c.execute("SELECT created_at FROM messages WHERE sender='partner' ORDER BY id DESC LIMIT 1").fetchone()
+        last_out = c.execute("SELECT created_at, send_status FROM messages WHERE sender='kogul' ORDER BY id DESC LIMIT 1").fetchone()
+        day = c.execute("SELECT "
+                        "SUM(CASE WHEN sender='kogul' AND send_status='sent' THEN 1 ELSE 0 END) AS sent, "
+                        "SUM(CASE WHEN sender='kogul' AND send_status='simulated' THEN 1 ELSE 0 END) AS simulated, "
+                        "SUM(CASE WHEN send_status='failed' THEN 1 ELSE 0 END) AS failed, "
+                        "SUM(CASE WHEN sender='partner' THEN 1 ELSE 0 END) AS replies "
+                        "FROM messages WHERE created_at >= datetime('now', '-1 day')").fetchone()
+        errors = c.execute("SELECT COUNT(*) AS n FROM activity_log WHERE level='error' AND ts >= datetime('now', '-1 day')").fetchone()
+        pending = c.execute("SELECT COUNT(*) AS n FROM weekly_categories WHERE review_status='pending_review'").fetchone()
+        waiting = c.execute("SELECT COUNT(*) AS n FROM partners WHERE status IN ('contacted','replied','negotiating')").fetchone()
+    return jsonify({"ok": True, "now": db.now(), "started_at": _STARTED_AT, "live": bool(_wa_live()),
+                    "scheduler": dict(_SCHED), "webhook_last": _LAST_WEBHOOK[0],
+                    "find_running": bool(find_running), "reports_queued": queued, "reports_building": building,
+                    "last_find": dict(last_find) if last_find else None,
+                    "last_partner_message": last_in["created_at"] if last_in else None,
+                    "last_kogul_message": dict(last_out) if last_out else None,
+                    "day": {k: (day[k] or 0) for k in ("sent", "simulated", "failed", "replies")},
+                    "errors_24h": errors["n"], "pending_review": pending["n"], "chats_waiting": waiting["n"]})
 
 
 @app.route("/api/categories/<int:cat_id>/restore", methods=["POST"])
@@ -1777,6 +1847,9 @@ def _known_facts_for_partner(partner_id: int) -> dict:
 
 
 _REPORT_BUILDS: dict[int, str] = {}  # category_id -> job id of a running build
+_STARTED_AT = db.now()
+_SCHED: dict = {"last_tick": None, "last_error": None}   # follow-up scheduler heartbeat
+_LAST_WEBHOOK: list = [None]                              # last inbound WhatsApp webhook
 _report_queue: list[int] = []         # category_ids waiting for a background build, one at a time
 _report_queue_lock = threading.Lock()
 _report_workers: list[threading.Thread] = []
@@ -1787,9 +1860,13 @@ def _queue_report_builds(category_ids: list[int]) -> None:
     """Builds reports ONE AT A TIME in the background (each makes live Kapruka
     searches, which must stay paced — memory: kapruka-cloudflare-rate-limit)."""
     with _report_queue_lock:
+        _added = 0
         for cid in category_ids:
             if cid and cid not in _report_queue:
                 _report_queue.append(cid)
+                _added += 1
+        if _added:
+            db.log_event("report", f"{_added} report(s) queued to build ({len(_report_queue)} waiting in total)")
         _report_workers[:] = [w for w in _report_workers if w.is_alive()]
         while len(_report_workers) < 3:
             w = threading.Thread(target=_report_queue_loop, daemon=True)
@@ -1869,7 +1946,7 @@ def _report_payload(category_id: int) -> dict | None:
         "partner": {k: card.get(k) for k in ("partner_id", "name", "concept", "department", "url", "phone", "status",
                                               "review_status", "needs_handover", "human_takeover", "not_agreed_reason",
                                               "ecommerce_platform", "products_to_bring_in", "worth_pursuing_reason",
-                                              "last_message_at", "source", "call_slot", "call_contact_name", "followup_id")},
+                                              "last_message_at", "source", "call_slot", "call_contact_name", "followup_id", "created_at")},
         "department_label": brain.department_label(card.get("department")),
         "images": _loads(card.get("brand_images"), [])[:4],
         "pipeline": _report_pipeline(card, msgs, profile, skus),
@@ -1953,8 +2030,11 @@ def _backfill_sells() -> None:
 
 def _run_report_build(job_id: str, category_id: int, force_kapruka: bool, force_site: bool) -> None:
     errors = []
+    _t_rep = time.time()
     try:
         card = _report_card(category_id)
+        db.log_event("report", f"Building the partner report for {card.get('name') if card else category_id}",
+                     ref_type="card", ref_id=category_id)
         conv = [m for m in _card_messages(card, with_body=True) if m["sender"] != "system"]
         with db.conn() as c:
             rep = c.execute("SELECT * FROM card_reports WHERE category_id = ?", (category_id,)).fetchone()
@@ -2035,9 +2115,20 @@ def _run_report_build(job_id: str, category_id: int, force_kapruka: bool, force_
                  json.dumps(profile) if profile else None,
                  json.dumps(kapruka), partner_report.terms_key(terms), "; ".join(errors) or None, len(conv), db.now()))
         _prescreen_reject(category_id, profile, catalog, kapruka, research)
+        try:
+            with db.conn() as c:
+                _s = _report_summary(c, category_id)
+            db.log_event("report", f"Report ready for {card.get('name')} in {round(time.time() - _t_rep)}s: "
+                         f"{_s.get('label') or 'built'}" + (f" ({_s['skus']} products)" if _s.get("skus") else "")
+                         + (f". Problems: {'; '.join(errors)[:200]}" if errors else ""),
+                         level="warn" if errors else "info", ref_type="card", ref_id=category_id)
+        except Exception:
+            pass
         with _JOBS_LOCK:
             _JOBS[job_id] = {"status": "done", "error": "; ".join(errors) or None}
     except Exception as e:
+        db.log_event("report", f"Report build failed for card {category_id}: {str(e)[:250]}", level="error",
+                     ref_type="card", ref_id=category_id)
         with _JOBS_LOCK:
             _JOBS[job_id] = {"status": "error", "error": str(e)[:300]}
 
@@ -2056,6 +2147,8 @@ def _prescreen_reject(category_id: int, profile: dict, catalog: dict, kapruka, r
             c.execute("UPDATE weekly_categories SET review_status = 'rejected', reviewed_at = ?, reject_reason = ?, "
                       "rejected_by = 'kogul' WHERE id = ? AND review_status = 'pending_review'",
                       (db.now(), f"Kogul pre-screen: {reason}", category_id))
+            db.log_event("report", f"Kogul rejected card {category_id} in the pre-screen: {reason}", level="warn",
+                         ref_type="card", ref_id=category_id)
     except Exception:
         pass  # a pre-screen bug must never fail a report build
 
@@ -2168,7 +2261,25 @@ def _log_message(partner_id: int, sender: str, body: str, simulated: bool = True
              send_status, wa_message_id, send_error)
         )
         c.execute("UPDATE partners SET last_message_at = ? WHERE id = ?", (db.now(), partner_id))
-        return cur.lastrowid
+        _mid = cur.lastrowid
+        _pn = c.execute("SELECT name FROM partners WHERE id = ?", (partner_id,)).fetchone()
+    _who = (_pn["name"] if _pn else None) or f"partner {partner_id}"
+    _snip = " ".join((body or "").split())[:110]
+    if sender == "partner":
+        db.log_event("outreach", f"{_who} replied: {_snip}", ref_type="partner", ref_id=partner_id)
+    elif sender in ("kogul", "human"):
+        _lbl = "Kogul" if sender == "kogul" else "A team member"
+        if send_status == "failed":
+            db.log_event("outreach", f"{_lbl} could NOT send to {_who}: {send_error or 'send failed'}", level="error",
+                         ref_type="partner", ref_id=partner_id)
+        elif send_status == "simulated":
+            db.log_event("outreach", f"{_lbl} to {_who} (simulation mode, NOT sent): {_snip}",
+                         ref_type="partner", ref_id=partner_id)
+        else:
+            db.log_event("outreach", f"{_lbl} sent to {_who}: {_snip}", ref_type="partner", ref_id=partner_id)
+    elif sender == "system":
+        db.log_event("outreach", f"{_who}: {_snip}", ref_type="partner", ref_id=partner_id)
+    return _mid
 
 
 # ---------------------------------------------------------- outbound WhatsApp
@@ -2415,9 +2526,12 @@ def _notify_pc_team(subject: str, body: str) -> None:
     try:
         from _env import env as _mail_env
         import notify_email
-        notify_email.send_email(_mail_env(), to=_pc_team_emails(), subject=subject, body=body)
-    except Exception:
-        pass  # fail-open — see docstring
+        _res = notify_email.send_email(_mail_env(), to=_pc_team_emails(), subject=subject, body=body)
+        _ok = not (isinstance(_res, dict) and _res.get("ok") is False)
+        db.log_event("alert", f"Email alert {'sent' if _ok else 'FAILED'}: {subject}", level="info" if _ok else "error")
+    except Exception as _e:
+        db.log_event("alert", f"Email alert FAILED: {subject} ({str(_e)[:120]})", level="error")
+        # fail-open — see docstring
 
 
 def _send_team_whatsapp(cfg: dict, to: str, text: str) -> dict:
@@ -2454,6 +2568,7 @@ def _send_team_whatsapp(cfg: dict, to: str, text: str) -> dict:
 
 
 def _notify_pc_team_whatsapp(text: str) -> None:
+    db.log_event("alert", f"WhatsApp alert to the team: {text[:140]}")
     """Real WhatsApp notification to every number in pc_team_phones, mirror
     of _notify_pc_team but over WhatsApp (2026-10-14, user: "i want to know
     how human intervention and interested candidates will be informed... i
@@ -3660,6 +3775,7 @@ def api_whatsapp_webhook_receive():
         payload = json.loads(raw_body or b"{}")
     except ValueError:
         return jsonify({"ok": True}), 200
+    _LAST_WEBHOOK[0] = db.now()
     try:
         for entry in payload.get("entry") or []:
             for change in entry.get("changes") or []:
@@ -4045,7 +4161,12 @@ def _followup_scheduler_loop() -> None:
     while True:
         try:
             _run_followup_check()
+            _SCHED["last_tick"] = db.now()
+            _SCHED["last_error"] = None
         except Exception as e:
+            _SCHED["last_tick"] = db.now()
+            _SCHED["last_error"] = str(e)[:200]
+            db.log_event("system", f"Follow-up scheduler error: {str(e)[:200]}", level="error")
             print(f"[followup scheduler] error: {e}", file=sys.stderr)
         time.sleep(_FOLLOWUP_POLL_SECONDS)
 
@@ -4057,6 +4178,7 @@ if __name__ == "__main__":
     # Defaults to 5010 unchanged for every existing local launch.
     port = int(os.environ.get("KOGUL_PORT", "5010"))
     print(f"Kogul running at http://127.0.0.1:{port}")
+    db.log_event("system", f"PC Agent started on port {port} ({'LIVE: real WhatsApp sends' if _wa_live() else 'simulation mode: nothing is sent'})")
     threading.Thread(target=_followup_scheduler_loop, daemon=True).start()
     # 2026-10-14: every pending business card gets its report before anyone reviews it.
     with db.conn() as _c:

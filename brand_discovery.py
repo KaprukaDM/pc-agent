@@ -67,6 +67,11 @@ import worth_pursuing  # noqa: E402
 import db  # noqa: E402
 
 
+def _ev(message: str, level: str = "info") -> None:
+    """Progress line for the Log tab / the live panel under "Find more businesses"."""
+    db.log_event("find", message, level=level, run_id=db.ACTIVE_RUN.get("find"))
+
+
 # ------------------------------------------------------------- seed list I/O
 
 def _read_seed_urls() -> list[str]:
@@ -1022,9 +1027,12 @@ def _open_web_search_for_brands(n: int, exclude_urls: set[str], model: str) -> l
     try:
         raw = run_claude_cli_with_search(prompt, model=model, timeout=240)
         found = extract_json(raw)
-        return [{"url": f["url"].strip(), "why_found": f.get("why_found") or "", "search_department": None}
-                for f in found if isinstance(f, dict) and f.get("url")]
+        res = [{"url": f["url"].strip(), "why_found": f.get("why_found") or "", "search_department": None}
+               for f in found if isinstance(f, dict) and f.get("url")]
+        _ev(f"Open search returned {len(res)} site(s)")
+        return res
     except Exception:
+        _ev("Open search failed or timed out", "warn")
         return []
 
 
@@ -1099,6 +1107,7 @@ def _web_search_for_brands(n: int, exclude_urls: set[str], model: str,
     # couple extra as a buffer against empty/error results — never more
     # than all of them.
     depts = depts[:min(len(depts), max(1, -(-n // max(per_dept, 1))) + 2)]
+    _ev("Gap search: departments chosen (least found so far first): " + ", ".join(depts))
 
     # 2026-10-02 speed fix: cluster ALL departments' gaps FIRST, in their own
     # parallel batch, before any search call starts. The original version
@@ -1253,6 +1262,7 @@ def _web_search_for_brands(n: int, exclude_urls: set[str], model: str,
             found = extract_json(raw)
             return dept, [f for f in found if isinstance(f, dict) and f.get("url")]
         except Exception:
+            _ev(f"Gap search for {dept} failed or timed out", "warn")
             return dept, []  # this department found nothing/errored — others still count
 
     out: list[dict] = []
@@ -1270,6 +1280,7 @@ def _web_search_for_brands(n: int, exclude_urls: set[str], model: str,
                 out.append({"url": url, "why_found": f.get("why_found") or "",
                              "search_department": dept})
                 kept += 1
+            _ev(f"Gap search {dept}: web search returned {len(found)} site(s), kept {kept}")
     # NOT truncated to `n` here — threads complete in arbitrary order, so an
     # early cutoff would silently re-introduce the department skew this
     # function exists to prevent (whichever 2-3 searches happen to finish
@@ -2557,10 +2568,12 @@ def source_brand_discovery(limit: int, model: str = "claude-sonnet-5",
         shortfall = limit - len(out)
         if shortfall <= 0:
             break
+        _ev(f"Round {round_num} of {max_rounds}: looking for {shortfall} more business(es)")
         found = _source_brand_discovery_round(
             shortfall, model=model, exclude_business_names=exclude_business_names | out_names,
             widen=round_num,  # round 1 = normal search; 2/3 progressively widen department coverage + per-dept yield
         )
+        _ev(f"Round {round_num} finished: {len(found)} business(es)" + (f" ({', '.join((j.get('concept') or '?') for j in found)})" if found else ""))
         for j in found:
             name_key = (j.get("concept") or "").strip().lower()
             if name_key and name_key not in out_names:
@@ -2595,6 +2608,7 @@ def _source_brand_discovery_round(limit: int, model: str, exclude_business_names
         fut_gap = pool.submit(_web_search_for_brands, half, seen, model, per_dept)
         open_found = fut_open.result()
         gap_found = fut_gap.result()
+    _ev(f"Search done: open stream {len(open_found)} site(s), gap stream {len(gap_found)} site(s)")
 
     # 2026-10-03 (user: "i dont see brand discovery brands based on daraz
     # kapruka verdict data - opportunity tool" — the stored
@@ -2627,6 +2641,7 @@ def _source_brand_discovery_round(limit: int, model: str, exclude_business_names
     room = max(0, limit - len(candidate_urls))
     candidate_urls += seed_urls[:room]
 
+    _ev(f"{len(candidate_urls)} new site(s) to check (the rest were already seen or are known partners)")
     if not candidate_urls:
         return []
 
@@ -2643,6 +2658,7 @@ def _source_brand_discovery_round(limit: int, model: str, exclude_business_names
     # Seen is written at the end, once we know which fits were actually used:
     # a good brand that only missed this week's cut must come back next week.
     _mark_seen(unreachable)
+    _ev(f"Read {len(fetched)} website(s); {len(unreachable)} could not be reached")
 
     if not fetched:
         return []
@@ -2667,7 +2683,10 @@ def _source_brand_discovery_round(limit: int, model: str, exclude_business_names
         f["already_partner_flag"] = match["slug"] if match else None  # "uncertain" match only, surfaced on the card
         not_onboarded.append(f)
 
+    _ev(f"{len(fetched) - len(not_onboarded)} already a partner or known; {len(not_onboarded)} go to the Kapruka fit check")
     judged = judge_brand_fit(not_onboarded, model=model)
+    _ev(f"Kapruka fit check: {len(judged)} fit, {len(not_onboarded) - len(judged)} not a fit"
+        + (f" (fit: {', '.join((j.get('business_name') or '?') for j in judged)})" if judged else ""))
     kept_urls = {j["url"] for j in judged}
     _mark_seen([f["url"] for f in not_onboarded if f["url"] not in kept_urls])  # judged unfit
 
@@ -2689,7 +2708,9 @@ def _source_brand_discovery_round(limit: int, model: str, exclude_business_names
         if m2 and not j.get("already_partner_flag"):
             j["already_partner_flag"] = m2["slug"]
         deduped.append(j)
+    _ev(f"After the duplicate check: {len(deduped)} business(es)")
     judged = attach_demand_evidence(deduped, model=model)
+    _ev("Demand evidence attached")
 
     # Department cap (2026-10-02, user: "make sure weekly found is mix of
     # categories"). The per-department search above is the primary fix, but

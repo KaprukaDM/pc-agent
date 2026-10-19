@@ -159,6 +159,19 @@ CREATE TABLE IF NOT EXISTS partner_simulation_messages (
 -- define rules if any problem is detected that will be automatically
 -- included". Active rows are appended to PC Agent's brief in every prompt
 -- (brain.team_rules_block), read fresh each message like KOGUL.md.
+CREATE TABLE IF NOT EXISTS activity_log (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts       TEXT NOT NULL,
+    kind     TEXT NOT NULL,          -- find | report | outreach | alert | team | system
+    level    TEXT NOT NULL DEFAULT 'info',   -- info | warn | error
+    message  TEXT NOT NULL,
+    run_id   TEXT,                   -- ties the lines of one "Find more businesses" click together
+    ref_type TEXT,
+    ref_id   INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_activity_log_kind ON activity_log(kind, id);
+CREATE INDEX IF NOT EXISTS idx_activity_log_run ON activity_log(run_id);
+
 CREATE TABLE IF NOT EXISTS agent_rules (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     rule           TEXT NOT NULL,       -- the instruction PC Agent must follow
@@ -365,6 +378,25 @@ def conn():
         c.commit()
     finally:
         c.close()
+
+
+ACTIVE_RUN: dict = {"find": None}  # run id of the "Find more businesses" job in progress (shared by its threads)
+_LOG_COUNT = [0]
+
+
+def log_event(kind: str, message: str, level: str = "info", run_id: str | None = None,
+              ref_type: str | None = None, ref_id: int | None = None) -> None:
+    """2026-10-19, user: a Log tab to see that sourcing and outreach are running. Never raises: logging
+    must not be able to break the thing it describes."""
+    try:
+        with conn() as c:
+            c.execute("INSERT INTO activity_log (ts, kind, level, message, run_id, ref_type, ref_id) VALUES (?,?,?,?,?,?,?)",
+                      (now(), kind, level, (message or "")[:600], run_id, ref_type, ref_id))
+            _LOG_COUNT[0] += 1
+            if _LOG_COUNT[0] % 200 == 0:  # keep the newest 20,000 lines
+                c.execute("DELETE FROM activity_log WHERE id < (SELECT MAX(id) FROM activity_log) - 20000")
+    except Exception:
+        pass
 
 
 def _migrate(c: sqlite3.Connection) -> None:
