@@ -10,3 +10,4 @@ data/*.bak*
 __pycache__/
 *.log
 data/gap_cluster_seen.json
+*.py.bak*
