@@ -607,7 +607,9 @@
 // fetch('/api/...') are resolved under the folder the page was opened from.
 const APP_BASE = location.pathname.replace(/[^/]*$/, '');
 const _nativeFetch = window.fetch.bind(window);
-window.fetch = (u, o) => _nativeFetch(typeof u === 'string' && u.startsWith('/') && !u.startsWith('//') ? APP_BASE + u.slice(1) : u, o);
+// A launcher that already rewrote '/api/...' to '/pcagent/api/...' (the VPS's run_kogul_prefixed.py does) must not
+// be prefixed a second time: that produced /pcagent/pcagent/api/... and a 404 on every tab (2026-10-19).
+window.fetch = (u, o) => _nativeFetch(typeof u === 'string' && u.startsWith('/') && !u.startsWith('//') && !u.startsWith(APP_BASE) ? APP_BASE + u.slice(1) : u, o);
 const $ = (sel, root=document) => root.querySelector(sel);
 const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
 

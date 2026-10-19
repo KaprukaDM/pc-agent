@@ -3748,6 +3748,43 @@ def api_whatsapp_webhook_verify():
     return "verification failed", 403
 
 
+# ----------------------------------------------------- Sithiji hand-off (2026-10-19)
+# The WhatsApp number has ONE webhook callback and it is this one. Sithiji (the
+# content assistant) gets only what is meant for it: a social-media LINK sent by
+# the admin or Chamudhi's number. Everything else, partner traffic included, is
+# handled exactly as before. Forwarding is best-effort and never blocks or breaks
+# the normal path.
+_SITHIJI_LINK_RE = re.compile(
+    r"https?://[^\s]*(?:instagram\.com|instagr\.am|tiktok\.com|facebook\.com/(?:reel|share|watch)|fb\.watch"
+    r"|youtube\.com/shorts|youtu\.be)[^\s]*", re.I)
+_SITHIJI_URL = os.environ.get("SITHIJI_WEBHOOK_URL", "http://127.0.0.1:5071/webhook/whatsapp")
+
+
+def _is_sithiji_link_message(msg: dict, cfg: dict) -> bool:
+    if msg.get("type") != "text":
+        return False
+    mine = {str(cfg.get(k)).strip().lstrip("+") for k in ("WA_ADMIN_NUMBER", "WA_CHAMUDHI_NUMBER") if cfg.get(k)}
+    if (msg.get("from") or "").lstrip("+") not in mine:
+        return False
+    return bool(_SITHIJI_LINK_RE.search((msg.get("text") or {}).get("body") or ""))
+
+
+def _forward_to_sithiji(msg: dict, value: dict, app_secret: str) -> None:
+    """Re-sign a one-message payload with the app secret (Sithiji verifies the
+    same signature Meta would send) and hand it over. Runs off-thread."""
+    import hashlib
+    import hmac
+    try:
+        import requests
+        body = json.dumps({"entry": [{"changes": [{"value": {
+            "contacts": value.get("contacts") or [], "messages": [msg]}}]}]}).encode()
+        sig = "sha256=" + hmac.new(app_secret.encode(), body, hashlib.sha256).hexdigest()
+        requests.post(_SITHIJI_URL, data=body, timeout=10,
+                      headers={"Content-Type": "application/json", "X-Hub-Signature-256": sig})
+    except Exception as e:
+        print(f"[whatsapp webhook] forward to Sithiji failed: {type(e).__name__}: {e}", file=sys.stderr)
+
+
 @app.route("/webhook/whatsapp", methods=["POST"])
 def api_whatsapp_webhook_receive():
     """Real inbound WhatsApp traffic. Fails CLOSED: without META_APP_SECRET,
@@ -3790,6 +3827,9 @@ def api_whatsapp_webhook_receive():
                                               (msg_id, db.now())).rowcount
                         if not fresh:
                             continue  # Meta re-delivery — already handled
+                    if _is_sithiji_link_message(msg, cfg):
+                        threading.Thread(target=_forward_to_sithiji, args=(msg, value, app_secret), daemon=True).start()
+                        continue   # Sithiji's, not a partner message
                     threading.Thread(target=_handle_inbound_whatsapp_message, args=(msg, value), daemon=True).start()
     except Exception as e:
         print(f"[whatsapp webhook] error processing payload: {e}", file=sys.stderr)
