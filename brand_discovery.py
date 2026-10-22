@@ -2831,6 +2831,72 @@ padding with weak results.
 """
 
 
+def candidates_from_urls(urls: list[str], model: str = "claude-sonnet-5", discovery_source: str = "recovered") -> list[dict]:
+    """2026-10-22: turn a known list of business URLs into weekly-card rows with the same steps a search run
+    ends with (read the site -> skip known/onboarded partners -> Kapruka fit check -> demand evidence).
+    Used to recover businesses a search found but lost when the server restarted before saving them."""
+    fetched = []
+    attempted = []
+    for url in urls:
+        attempted.append(url)
+        site = _fetch_brand_site(url)
+        if site:
+            site["found_via_web_search"] = True
+            site["discovery_source"] = discovery_source
+            fetched.append(site)
+    _mark_seen(attempted)
+    if not fetched:
+        return []
+
+    partner_slugs = partner_sitemap.fetch_partner_slugs()
+    known_partners = _load_known_partners()
+    not_onboarded = []
+    for f in fetched:
+        name_guess = _guess_business_name(f)
+        if (_norm_partner_key(f.get("url", "")) in known_partners
+                or _norm_partner_key(name_guess) in known_partners):
+            continue
+        match = partner_sitemap.match_existing_partner(name_guess, slugs=partner_slugs)
+        if match and match["confidence"] in ("exact", "likely"):
+            continue
+        f["already_partner_flag"] = match["slug"] if match else None
+        not_onboarded.append(f)
+
+    judged = judge_brand_fit(not_onboarded, model=model)
+    judged = attach_demand_evidence(judged, model=model)
+
+    out = []
+    for j in judged:
+        out.append({
+            "source": "brand_discovery",
+            "department": j.get("department") or "other",
+            "concept": j.get("business_name"),
+            "concept_volume": 0,
+            "gsc_impressions": None,
+            "kapruka_url": None,
+            "kapruka_product_count": None,
+            "daraz_revenue_proxy": None,
+            "opportunity_type": None,
+            "action": j.get("products_to_bring_in") or "",
+            "source_ref": j.get("url"),
+            "worth_pursuing_reason": j.get("reason"),
+            "business_url": j.get("url"),
+            "products_to_bring_in": j.get("products_to_bring_in") or "",
+            "already_partner_flag": j.get("already_partner_flag"),
+            "found_via_web_search": True,
+            "discovery_source": j.get("discovery_source") or discovery_source,
+            "brand_images": j.get("images") or [],
+            "social_links": j.get("social_links") or [],
+            "phones": j.get("phones") or [],
+            "emails": j.get("emails") or [],
+            "whatsapp": j.get("whatsapp"),
+            "ecommerce_platform": j.get("ecommerce_platform"),
+            "demand_evidence": j.get("demand_evidence") or [],
+            "search_keywords": j.get("search_keywords") or [],
+        })
+    return out
+
+
 def search_for_missing_item(row: dict, model: str = "claude-sonnet-5", n: int = 4) -> list[dict]:
     """Targeted, on-demand search for ONE missing-item row (the Potential
     Product Opportunities tab's 'Find partner now' button, see
