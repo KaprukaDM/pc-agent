@@ -12,6 +12,7 @@ import json
 import os as _os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 _claude_cli_path: str | None = None
@@ -96,7 +97,7 @@ def run_claude_cli(prompt: str, model: str = "claude-sonnet-5", timeout: int = 1
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"Claude CLI timed out after {timeout}s.")
     if proc.returncode != 0:
-        raise RuntimeError(f"Claude CLI exited {proc.returncode}: {(proc.stderr or '').strip()[:500]}")
+        raise RuntimeError(f"Claude CLI exited {proc.returncode}: {((proc.stderr or '').strip() or (proc.stdout or '').strip())[:500]}")
     return (proc.stdout or "").strip()
 
 
@@ -204,19 +205,28 @@ def run_claude_cli_with_search(prompt: str, model: str = "claude-sonnet-5", time
     fetched for them). Use ONLY for the brand-discovery search step; every
     other Kogul gate must keep using run_claude_cli."""
     exe = find_claude_cli()
-    try:
-        proc = subprocess.run(
-            [exe, "-p", "--model", model, "--tools", "WebSearch", "--allowedTools", "WebSearch", *_no_mcp_args()],
-            input=prompt,
-            capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
-            shell=False,
-            env=claude_cli_env(),
-            cwd=_sandbox_cwd(),
-        )
-    except FileNotFoundError as e:
-        raise RuntimeError(f"Found claude CLI at {exe} but could not execute it: {e}")
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"Claude CLI (with search) timed out after {timeout}s.")
+    # 2026-10-22: a whole search run once returned nothing because every CLI call exited 1 with an EMPTY
+    # message (the CLI prints its error on stdout, which was never shown). A failed call is now retried
+    # once after a short pause, and the error carries stdout as well as stderr.
+    proc = None
+    for attempt in (1, 2):
+        try:
+            proc = subprocess.run(
+                [exe, "-p", "--model", model, "--tools", "WebSearch", "--allowedTools", "WebSearch", *_no_mcp_args()],
+                input=prompt,
+                capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
+                shell=False,
+                env=claude_cli_env(),
+                cwd=_sandbox_cwd(),
+            )
+        except FileNotFoundError as e:
+            raise RuntimeError(f"Found claude CLI at {exe} but could not execute it: {e}")
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"Claude CLI (with search) timed out after {timeout}s.")
+        if proc.returncode == 0 or attempt == 2:
+            break
+        time.sleep(20)
     if proc.returncode != 0:
-        raise RuntimeError(f"Claude CLI (with search) exited {proc.returncode}: {(proc.stderr or '').strip()[:500]}")
+        detail = ((proc.stderr or "").strip() or (proc.stdout or "").strip())[:500]
+        raise RuntimeError(f"Claude CLI (with search) exited {proc.returncode} (after a retry): {detail}")
     return (proc.stdout or "").strip()
