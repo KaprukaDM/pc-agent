@@ -2098,7 +2098,7 @@ def _build_fit_block(fetched_candidates: list[dict]) -> str:
 
 
 def judge_brand_fit(fetched_candidates: list[dict], model: str = "claude-sonnet-5",
-                     batch_size: int = 8, timeout: int = 200) -> list[dict]:
+                     batch_size: int = 8, timeout: int = 200, template: str | None = None, block_fn=None) -> list[dict]:
     """Returns only candidates judged fits=True, each enriched with
     business_name/department/products_to_bring_in/reason. Fail-open per
     batch on any error (CLI failure, bad JSON) — KEEPS the whole batch,
@@ -2123,8 +2123,8 @@ def judge_brand_fit(fetched_candidates: list[dict], model: str = "claude-sonnet-
     out: list[dict] = []
     for i in range(0, len(fetched_candidates), batch_size):
         batch = fetched_candidates[i:i + batch_size]
-        prompt = _FIT_PROMPT_TEMPLATE.format(candidates_block=_build_fit_block(batch),
-                                              reject_reasons_block=reject_reasons_block)
+        prompt = (template or _FIT_PROMPT_TEMPLATE).format(candidates_block=(block_fn or _build_fit_block)(batch),
+                                                           reject_reasons_block=reject_reasons_block)
         try:
             raw = run_claude_cli(prompt, model=model, timeout=timeout)
             verdicts = extract_json(raw)
@@ -2645,6 +2645,21 @@ def source_brand_discovery(limit: int, model: str = "claude-sonnet-5",
 
 def _source_brand_discovery_round(limit: int, model: str, exclude_business_names: set[str],
                                     widen: int = 1) -> list[dict]:
+    """One round = the website search + a small social-only search (businesses with a strong Instagram / Facebook /
+    TikTok presence and no website of their own, see social_discovery.py). The social part never fails the round."""
+    out = _source_brand_discovery_round_web(limit, model, exclude_business_names, widen)
+    try:
+        import social_discovery
+        want = max(1, min(3, limit // 4)) if limit >= 2 else 0
+        if want and len(out) < limit + want:
+            out = out + social_discovery.source_social_candidates(want, model, exclude_business_names)
+    except Exception as e:
+        _ev(f"Social search skipped: {str(e)[:160]}", "warn")
+    return out
+
+
+def _source_brand_discovery_round_web(limit: int, model: str, exclude_business_names: set[str],
+                                       widen: int = 1) -> list[dict]:
     """One pass of the search -> fetch -> judge pipeline, called repeatedly
     by source_brand_discovery with a shrinking `limit` (the shortfall still
     needed) and a growing `widen` factor each round it has to retry. `widen`

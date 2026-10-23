@@ -331,6 +331,9 @@ DEFAULT_SETTINGS = {
     # Business information like whats the products they sell, How many products
     # they have, Location of their buisness". One question per message, in order;
     # per-partner approved questions (partner_questions) are asked after these.
+    # 2026-10-23: social-only businesses (no website) are searched too; the bar is combined followers
+    "social_min_followers": "3000",
+    "social_stream_enabled": "1",
     "brief_questions": json.dumps([
         "What products do you sell?",
         "Roughly how many individual products (SKUs) do you have? Count each item, not categories.",

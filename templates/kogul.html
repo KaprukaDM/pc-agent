@@ -1039,6 +1039,9 @@ function discoverySourceBadge(discoverySource) {
     const dept = s.slice(4).replace(/_/g, ' ');
     return `<span class="badge contacted" title="Found by the per-department search sharpened by real Daraz/Kapruka category-gap data from the Opportunity Tool (searched: ${escapeHtml(dept)}) — not yet human-vetted, give it an extra look before approving">Daraz/Kapruka gap search (${escapeHtml(dept)})</span>`;
   }
+  if (s.startsWith('social:')) {
+    return `<span class="badge agreed" title="Sells through social media only (${escapeHtml(s.slice(7).replace(/\+/g, ', '))}), no website of its own. Found by the social-media search, kept because it is above the follower bar. Not yet human-vetted: check the profile and that a phone number exists before approving">Social only · no website</span>`;
+  }
   if (s === 'open') {
     return `<span class="badge replied" title="Found by Kogul's own open, unconstrained web search — not steered by any specific category gap, not yet human-vetted, give it an extra look before approving">open self-discovery</span>`;
   }

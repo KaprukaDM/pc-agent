@@ -1854,3 +1854,9 @@ Cause: (1) KOGUL.md and the brief questions contradicted the rules ("No bullet l
 - [x] Real one-business search on a temp DB copy showed the live lines; found a bug: the page gave up after 10 min ("Error: timed out waiting") while the search kept running -> poll limit raised to 1 hour for Find more businesses.
 - [x] "Found 2 Oct 2026" date on every business card and in the partner report header.
 - [ ] Deploy to the VPS.
+
+## 2026-10-22/23 — Social-only businesses, search freshness, recovery (user)
+- [x] Social-only stream (social_discovery.py): web search for businesses selling mainly via Instagram/Facebook/TikTok with no website; profiles read from link-preview tags; bar = 3,000 combined followers (setting social_min_followers); profile-based fit check; no phone = flag, not a rejection; cards tagged "Social only · no website" (discovery_source social:<platforms>). Runs as a small part of every search round.
+- [x] Real test: found Trinklets (25k followers, no phone) and Arbor (3,105, phone) ; Arbor's report built correctly with no website (location, 12.9k followers, 5+ products from a marketplace listing, Kapruka comparison).
+- [x] Search freshness: exclusion list (pipeline first + random sample), rotating open-search focus, repeat-rate warning. Recovery helper candidates_from_urls re-added 8 lost businesses.
+- [ ] Deploy social stream to the VPS.

@@ -12,3 +12,4 @@ __pycache__/
 data/gap_cluster_seen.json
 *.py.bak*
 data/open_search_angle.json
+data/social_seen.json

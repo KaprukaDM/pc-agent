@@ -637,7 +637,8 @@ def _run_weekly_generate(job_id: str, week: str, num_cats: int, per_cat: int,
             # already uses.
             metrics_json = json.dumps({"final_verdict": None, "brand_discovery": True,
                                         "demand_evidence": p.get("demand_evidence") or [],
-                                        "search_keywords": p.get("search_keywords") or []})
+                                        "search_keywords": p.get("search_keywords") or [],
+                                        "social": p.get("social_profile")})
             scored.append((_BRAND_DISCOVERY_SCORE, p, metrics_json))
 
         scored.sort(key=lambda t: -t[0])
@@ -2043,15 +2044,25 @@ def _run_report_build(job_id: str, category_id: int, force_kapruka: bool, force_
                                                     "AND status = 'approved' ORDER BY id", (category_id,)).fetchall()]
         rep = dict(rep) if rep else {}
 
+        is_social = str(card.get("discovery_source") or "").startswith("social:")
+        social_info = (_loads(card.get("metrics_json"), {}) or {}).get("social") or {}
         catalog = _loads(rep.get("catalog_json"), None)
         short_titles = bool(catalog and catalog.get("count") and "store" in str(catalog.get("source") or "")
                             and len(catalog.get("titles") or []) < min(catalog["count"], 400))
         if catalog is None or force_site or catalog.get("count") is None or short_titles \
                 or "sitemap" in str(catalog.get("source") or ""):  # no exact list yet: always re-check (cheap)
-            catalog = partner_report.store_catalog(card.get("url"), card.get("ecommerce_platform"))
+            catalog = partner_report.store_catalog(None if is_social else card.get("url"), card.get("ecommerce_platform"))
+            if is_social:
+                catalog = {**catalog, "note": "No website: this business sells through social media only"}
         site = _loads(rep.get("site_json"), None)
         if site is None or force_site or "product_pages" not in site:  # older scans lack the product-page count
-            site = partner_report.site_location_text(card.get("url"))
+            site = partner_report.site_location_text(None if is_social else card.get("url"))
+            if is_social:
+                site = {**site, "product_pages": 0, "snippets": (
+                    f"Social-media-only business (no website). Profiles: {', '.join(_loads(card.get('social_links'), []) or [])}. "
+                    f"About: {social_info.get('why') or ''} Sells: {card.get('products_to_bring_in') or ''} "
+                    f"Combined followers: {social_info.get('followers') or 'unknown'}. "
+                    f"Phone found: {social_info.get('phone') or 'none'}.")}
         if (catalog.get("count") is None or "sitemap" in str(catalog.get("source") or "")) and site.get("product_pages"):
             # no store product API: distinct product pages linked on their site, a real lower bound
             catalog = {**catalog, "seen_count": site["product_pages"]}
