@@ -255,10 +255,24 @@ def _exclude_block(urls) -> str:
     """Bare domains (shorter than full URLs), capped so the search prompt
     doesn't grow forever as the seen list does. Anything past the cap is
     still filtered out in code after the search returns."""
-    doms = sorted({re.sub(r"^https?://(www\.)?", "", u.strip().lower()).split("/")[0] for u in (urls or []) if u})
+    dom = lambda u: re.sub(r"^https?://(www\.)?", "", u.strip().lower()).split("/")[0]
+    doms = sorted({dom(u) for u in (urls or []) if u})
     if not doms:
         return "(none yet)"
-    return ", ".join(doms[:250]) + (f" (+{len(doms) - 250} more)" if len(doms) > 250 else "")
+    cap = 300
+    if len(doms) <= cap:
+        return ", ".join(doms)
+    # 2026-10-23: the cap used to keep the alphabet's first 250, so sites after "m" were never excluded in the prompt
+    # and kept coming back. Businesses already in Kogul go first (the model re-suggests those most), then a random
+    # sample of the rest, different on every call.
+    try:
+        mine = {dom(r["business_url"]) for r in _pipeline_rows() if r["business_url"]}
+    except Exception:
+        mine = set()
+    first = sorted(d for d in doms if d in mine)[:cap]
+    rest = [d for d in doms if d not in set(first)]
+    picked = first + random.sample(rest, min(len(rest), cap - len(first)))
+    return ", ".join(sorted(picked)) + f" (+{len(doms) - len(picked)} more)"
 
 
 def _pipeline_rows() -> list:
@@ -981,7 +995,7 @@ Socks, Skrumptious (artisanal brownies), Caravan Fresh (bakery/cakes). A busines
 giftable/lifestyle-branded to count — a genuine specialty retailer in any category (hobby, auto,
 tools, electronics, home) is just as strong a find if it's independent and has real product depth.
 {missing_block}
-
+{angle_block}
 Already excluded, do NOT return these again: {exclude_block}
 
 Return ONLY a JSON array of objects, each exactly: {{"url": "<homepage url>", "why_found": "<one
@@ -989,6 +1003,44 @@ short sentence on what this business sells and why it looked promising from the 
 No other text, no markdown fences. If you can't find {n} good ones, return fewer rather than
 padding with weak results.
 """
+
+
+_OPEN_ANGLES = [
+    "handmade and artisan makers (crafts, pottery, batik, handloom, brass, wood carving)",
+    "brands that started on Instagram or Facebook and now have their own website",
+    "natural, organic and ayurvedic products (skincare, hair, wellness, herbal teas)",
+    "gifting specialists (hampers, personalised gifts, occasion boxes, corporate gifts)",
+    "food makers (sweets, snacks, spice blends, sauces, baked goods, cakes, chocolates)",
+    "fashion labels (modest wear, sarees, kidswear, menswear, accessories, bags, footwear)",
+    "baby, kids and parenting products (toys, learning, clothing, nursery)",
+    "home and living (decor, candles, furniture, kitchenware, garden and plants)",
+    "pet care and pet accessories",
+    "hobby, art and craft supplies, stationery, books and board games",
+    "fitness, outdoor and sports gear, cycling, camping, yoga",
+    "jewellery designers, gems and watches",
+    "tech accessories, gadgets and small electronics specialists",
+    "vehicle, bike and tools specialists (accessories, parts, care products)",
+    "diaspora-facing brands that ship Sri Lankan goods overseas",
+    "eco-friendly and zero-waste brands (reusable, sustainable, upcycled)",
+    "musical instruments, party and event supplies, festival (Avurudu, Christmas, Vesak) products",
+    "beauty, makeup, fragrance and grooming brands",
+]
+_OPEN_ANGLE_PATH = KOGUL_DIR / "data" / "open_search_angle.json"
+
+
+def _next_open_angle() -> str:
+    """Rotates through _OPEN_ANGLES, never repeating the last few, so each open search looks in a different corner."""
+    try:
+        recent = json.loads(_OPEN_ANGLE_PATH.read_text(encoding="utf-8")).get("recent", [])
+    except Exception:
+        recent = []
+    options = [a for a in _OPEN_ANGLES if a not in recent[-6:]] or _OPEN_ANGLES
+    angle = random.choice(options)
+    try:
+        _OPEN_ANGLE_PATH.write_text(json.dumps({"recent": (recent + [angle])[-12:]}), encoding="utf-8")
+    except Exception:
+        pass
+    return angle
 
 
 def _open_web_search_for_brands(n: int, exclude_urls: set[str], model: str) -> list[dict]:
@@ -1027,7 +1079,12 @@ def _open_web_search_for_brands(n: int, exclude_urls: set[str], model: str) -> l
     # search failed or timed out"). One call now asks for at most 6, with a longer limit; the extra rounds in
     # source_brand_discovery cover any shortfall.
     ask = min(n, 6)
-    prompt = _OPEN_SEARCH_PROMPT.format(n=ask, exclude_block=exclude_block, missing_block=missing_block)
+    angle = _next_open_angle()
+    _ev(f"Open search focus this time: {angle}")
+    angle_block = (f"\nFOCUS FOR THIS SEARCH: start from {angle}. Skip household names; still return only "
+                   f"businesses that clear the bar above, and fewer rather than weak ones.\n")
+    prompt = _OPEN_SEARCH_PROMPT.format(n=ask, exclude_block=exclude_block, missing_block=missing_block,
+                                        angle_block=angle_block)
     try:
         raw = run_claude_cli_with_search(prompt, model=model, timeout=420)
         found = extract_json(raw)
@@ -2645,7 +2702,11 @@ def _source_brand_discovery_round(limit: int, model: str, exclude_business_names
     room = max(0, limit - len(candidate_urls))
     candidate_urls += seed_urls[:room]
 
-    _ev(f"{len(candidate_urls)} new site(s) to check (the rest were already seen or are known partners)")
+    _returned = len(open_found) + len(gap_found)
+    _fresh = len([u for u in candidate_urls if u in web_search_urls])
+    _ev(f"{len(candidate_urls)} new site(s) to check ({_fresh} new of {_returned} the searches returned; the rest were already seen or are known partners)")
+    if _returned >= 6 and _fresh / _returned < 0.3:
+        _ev(f"Most search results ({_returned - _fresh} of {_returned}) were sites already seen: the search is running low on new businesses", "warn")
     if not candidate_urls:
         return []
 

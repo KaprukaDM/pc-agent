@@ -11,3 +11,4 @@ __pycache__/
 *.log
 data/gap_cluster_seen.json
 *.py.bak*
+data/open_search_angle.json
