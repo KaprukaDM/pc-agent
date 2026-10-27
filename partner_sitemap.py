@@ -148,3 +148,122 @@ def match_existing_partner(business_name: str, slugs: list[str] | None = None) -
     if best_score >= 0.4:
         return {"slug": best_slug, "confidence": "uncertain"}
     return None
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# 2026-10-27, user: "make sure it checks the sitemap, finds possible links, goes into those links and filters out
+# which are already in the sitemap". The word-overlap match alone missed real partners (a domain-derived name
+# has no word boundaries; "Umandawa" vs slug "umandawa-online" scored only "uncertain"). Now: pick the possible
+# partner pages from the sitemap, OPEN each one, and compare what is on the page with the candidate.
+
+PAGES_CACHE_PATH = Path(__file__).resolve().parent / "data" / "partner_pages_cache.json"
+PAGES_CACHE_DAYS = 7
+PARTNER_URL = "https://www.kapruka.com/partner/"
+_GENERIC = {"ceylon", "lanka", "srilanka", "sri", "foods", "food", "store", "stores", "shop", "shops", "online", "pvt",
+            "ltd", "lk", "products", "product", "company", "international", "trading", "group", "collection",
+            "collections", "fashion", "fashions", "traders", "enterprises", "creations", "designs", "design",
+            "original", "natural", "organic", "premium", "best", "the", "and", "worldwide", "global", "supplies",
+            "mart", "world", "house", "home", "gift", "gifts", "pet", "pets", "kids", "baby", "auto", "cars", "car"}
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _domain_stem(url: str) -> str:
+    host = re.sub(r"^https?://(www\.)?", "", (url or "").strip().lower()).split("/")[0]
+    host = re.sub(r"\.(lk|com|net|org|co|io|shop|store|info)$", "", host)
+    stem = _norm(host.split(".")[-1] if "." in host else host)  # shop.alston.lk -> alston, not "shop"
+    return "" if stem in _GENERIC else stem
+
+
+def possible_partner_slugs(business_name: str, url: str | None = None, slugs: list[str] | None = None, limit: int = 3) -> list[str]:
+    """Sitemap slugs worth opening: they share a distinctive word with the name, or one concatenated form
+    contains the other (name or domain stem vs slug), 5+ characters."""
+    slugs = slugs if slugs is not None else fetch_partner_slugs()
+    name_words = {w for w in _words(business_name) if w not in _GENERIC and len(w) >= 4}
+    keys = {k for k in (_norm(business_name), _domain_stem(url or "")) if len(k) >= 5}
+    scored = []
+    for slug in slugs:
+        s_concat = _norm(slug)
+        s_words = {w for w in _slug_to_words(slug) if w not in _GENERIC and len(w) >= 4}
+        score = 0.0
+        if name_words & s_words:
+            score += 1 + len(name_words & s_words)
+        for k in keys:
+            if len(s_concat) >= 5 and (k in s_concat or s_concat in k):
+                score += 3
+        if score:
+            scored.append((score, slug))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    return [s for _, s in scored[:limit]]
+
+
+def _load_pages() -> dict:
+    try:
+        return json.loads(PAGES_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def partner_page(slug: str) -> dict | None:
+    """{title, h1, text_norm, digits} of https://www.kapruka.com/partner/<slug>, cached for a week. None if it
+    could not be read (the caller then keeps the candidate: a false reject silently loses a real business)."""
+    import requests
+    cache = _load_pages()
+    hit = cache.get(slug)
+    if hit and time.time() - hit.get("at", 0) < PAGES_CACHE_DAYS * 86400:
+        return hit
+    try:
+        r = requests.get(PARTNER_URL + slug, headers={"User-Agent": UA}, timeout=40)
+    except Exception:
+        return None
+    if r.status_code != 200:
+        return None
+    import html as _html
+    raw = _html.unescape(r.text)
+    title = re.search(r"<title>(.*?)</title>", raw, re.S)
+    h1 = re.search(r"<h1[^>]*>(.*?)</h1>", raw, re.S)
+    body = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", raw, flags=re.S | re.I)
+    body = re.sub(r"<[^>]+>", " ", body)
+    entry = {"at": time.time(), "title": re.sub(r"\s+", " ", (title.group(1) if title else "")).strip()[:160],
+             "h1": re.sub(r"<[^>]+>|\s+", " ", (h1.group(1) if h1 else "")).strip()[:160],
+             "text_norm": _norm(body)[:60000], "digits": re.sub(r"\D", "", body)[:30000]}
+    # an unknown slug serves a generic "YOUR LISTED ITEMS" page with no heading: that is not a partner page
+    entry["real"] = bool(entry["h1"])
+    cache[slug] = entry
+    try:
+        PAGES_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = PAGES_CACHE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(PAGES_CACHE_PATH)
+    except Exception:
+        pass
+    return entry
+
+
+def verify_already_partner(business_name: str, url: str | None = None, phones: list[str] | None = None,
+                           slugs: list[str] | None = None) -> dict | None:
+    """Open each possible partner page and compare. A match needs real evidence on the page: the business name or
+    its domain in the page heading/title, or in the page body at least twice (their products are listed there), or
+    one of its phone numbers. Returns {"slug", "reason"} or None."""
+    name_key = _norm(business_name)
+    dom_key = _domain_stem(url or "")
+    tails = {re.sub(r"\D", "", p)[-9:] for p in (phones or []) if len(re.sub(r"\D", "", p)) >= 9}
+    for slug in possible_partner_slugs(business_name, url, slugs):
+        pg = partner_page(slug)
+        if not pg or not pg.get("real"):
+            continue
+        head = _norm(pg["title"] + " " + pg["h1"])
+        body = pg["text_norm"]
+        for label, key in (("name", name_key), ("website name", dom_key)):
+            # the page heading must START with it (or contain a long, distinctive form): a shared product word such as
+            # "candle" in "Candle House Ceylon" must not count as the same business
+            if len(key) >= 7 and key not in _GENERIC and (head.startswith(key) or (len(key) >= 9 and key in head)):
+                return {"slug": slug, "reason": f"its {label} is the Partner Central page title ({pg['h1'] or pg['title']})"}
+        # their products are listed on a partner's page under the brand name (Nai Miris sells through Artisan Miris)
+        if len(name_key) >= 7 and name_key not in _GENERIC and body.count(name_key) >= 2:
+            return {"slug": slug, "reason": f"its name appears {body.count(name_key)} times on the Partner Central page /partner/{slug}"}
+        if any(t and t in pg["digits"] for t in tails):
+            return {"slug": slug, "reason": f"its phone number is on the Partner Central page /partner/{slug}"}
+    return None

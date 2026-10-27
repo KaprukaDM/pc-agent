@@ -2643,19 +2643,57 @@ def source_brand_discovery(limit: int, model: str = "claude-sonnet-5",
     return out
 
 
+def existing_partner_reason(name: str, url: str | None, phones: list[str] | None, slugs: list[str] | None,
+                            check_kapruka_brand: bool = True) -> tuple[str | None, str | None]:
+    """2026-10-27, user: Royal Cashew and Umandawa should have been filtered out. Returns (skip_reason, flag):
+    skip_reason when the business is clearly already on Kapruka, flag (a short text for the card) when it only
+    looks possible.
+      1. open the possible Partner Central pages from the sitemap and compare (partner_sitemap.verify_already_partner)
+      2. does kapruka.com itself already sell their brand? 3+ products carrying the brand name = already on Kapruka
+         (Royal Cashew has 9 products on Kapruka but no Partner Central page of its own); 1-2 = flag only."""
+    try:
+        v = partner_sitemap.verify_already_partner(name, url, phones, slugs)
+        if v:
+            return f"already a Partner Central partner ({v['slug']}): {v['reason']}", None
+    except Exception:
+        pass
+    if check_kapruka_brand and name:
+        try:
+            import partner_report
+            res = partner_report.kapruka_brand_check(name)
+            if res and res.get("ok"):
+                n = res.get("count") or 0
+                key = re.sub(r"[^a-z0-9]", "", name.lower())
+                if n >= 3 and len(key) >= 5:
+                    return f"Kapruka already sells {n} products of this brand ({res['search_url']})", None
+                if n >= 1:
+                    return None, f"Kapruka already sells {n} product(s) of this brand"
+        except Exception:
+            pass
+    return None, None
+
+
 def _source_brand_discovery_round(limit: int, model: str, exclude_business_names: set[str],
                                     widen: int = 1) -> list[dict]:
     """One round = the website search + a small social-only search (businesses with a strong Instagram / Facebook /
     TikTok presence and no website of their own, see social_discovery.py). The social part never fails the round."""
-    out = _source_brand_discovery_round_web(limit, model, exclude_business_names, widen)
-    try:
-        import social_discovery
-        want = max(1, min(3, limit // 4)) if limit >= 2 else 0
-        if want and len(out) < limit + want:
-            out = out + social_discovery.source_social_candidates(want, model, exclude_business_names)
-    except Exception as e:
-        _ev(f"Social search skipped: {str(e)[:160]}", "warn")
-    return out
+    want = max(1, min(3, limit // 4)) if limit >= 2 else 0
+    if not want:
+        return _source_brand_discovery_round_web(limit, model, exclude_business_names, widen)
+    # 2026-10-27: the social search runs AT THE SAME TIME as the website search (it used to wait for it, so it
+    # started ~13 minutes late and was lost if the run was cut off first).
+    def _social():
+        try:
+            import social_discovery
+            return social_discovery.source_social_candidates(want, model, exclude_business_names)
+        except Exception as e:
+            _ev(f"Social search skipped: {str(e)[:160]}", "warn")
+            return []
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_social = pool.submit(_social)
+        out = _source_brand_discovery_round_web(limit, model, exclude_business_names, widen)
+        social = fut_social.result()
+    return out + social
 
 
 def _source_brand_discovery_round_web(limit: int, model: str, exclude_business_names: set[str],
@@ -2760,6 +2798,11 @@ def _source_brand_discovery_round_web(limit: int, model: str, exclude_business_n
         if match and match["confidence"] in ("exact", "likely"):
             _mark_seen([f["url"]])
             continue  # already a Partner Central partner — skip outright
+        reason, _flag = existing_partner_reason(name_guess, f.get("url"), f.get("phones"), partner_slugs, check_kapruka_brand=False)
+        if reason:
+            _ev(f"Skipped {name_guess}: {reason}")
+            _mark_seen([f["url"]])
+            continue
         f["already_partner_flag"] = match["slug"] if match else None  # "uncertain" match only, surfaced on the card
         not_onboarded.append(f)
 
@@ -2785,8 +2828,15 @@ def _source_brand_discovery_round_web(limit: int, model: str, exclude_business_n
         if m2 and m2["confidence"] in ("exact", "likely"):
             _mark_seen([j["url"]])
             continue
+        reason, flag = existing_partner_reason(name, j.get("url"), j.get("phones"), partner_slugs)
+        if reason:
+            _ev(f"Skipped {name}: {reason}")
+            _mark_seen([j["url"]])
+            continue
         if m2 and not j.get("already_partner_flag"):
             j["already_partner_flag"] = m2["slug"]
+        elif flag and not j.get("already_partner_flag"):
+            j["already_partner_flag"] = flag
         deduped.append(j)
     _ev(f"After the duplicate check: {len(deduped)} business(es)")
     judged = attach_demand_evidence(deduped, model=model)

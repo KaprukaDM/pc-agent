@@ -209,6 +209,15 @@ def source_social_candidates(limit: int, model: str, exclude_names: set[str] | N
         tried_keys += keys
         if bd._norm_partner_key(name) in known_names or any(k in seen for k in keys):
             continue
+        try:
+            import partner_sitemap
+            reason, _flag = bd.existing_partner_reason(name, None, [f.get("phone") or ""], partner_sitemap.fetch_partner_slugs())
+        except Exception:
+            reason = None
+        if reason:
+            _ev(f"Social: skipped {name}: {reason}")
+            tried_keys += keys
+            continue
         profiles = [read_profile(u) for u in links[:3]]
         counted = [p["followers"] for p in profiles if p["followers"]]
         followers = sum(counted)
