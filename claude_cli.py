@@ -225,6 +225,9 @@ def run_claude_cli_with_search(prompt: str, model: str = "claude-sonnet-5", time
             raise RuntimeError(f"Claude CLI (with search) timed out after {timeout}s.")
         if proc.returncode == 0 or attempt == 2:
             break
+        _out = ((proc.stdout or "") + (proc.stderr or "")).lower()
+        if "session limit" in _out or "usage limit" in _out or "rate limit" in _out:
+            break  # the account's Claude usage limit: waiting 20 s and retrying cannot help (22 Oct / 26 Oct)
         time.sleep(20)
     if proc.returncode != 0:
         detail = ((proc.stderr or "").strip() or (proc.stdout or "").strip())[:500]

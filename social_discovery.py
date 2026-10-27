@@ -178,7 +178,7 @@ def _search(n: int, exclude_block: str, model: str) -> list[dict]:
     angle_block = f"\nFOCUS FOR THIS SEARCH: start from {angle}.\n"
     try:
         raw = run_claude_cli_with_search(_SEARCH_PROMPT.format(n=n, exclude_block=exclude_block, angle_block=angle_block),
-                                         model=model, timeout=420)
+                                         model=model, timeout=360)
         found = [f for f in extract_json(raw) if isinstance(f, dict) and f.get("name")]
         _ev(f"Social search returned {len(found)} business(es) (focus: {angle})")
         return found
@@ -195,7 +195,7 @@ def source_social_candidates(limit: int, model: str, exclude_names: set[str] | N
     seen = _load_seen()
     known_names = {bd._norm_partner_key(n) for n in (exclude_names or set())} | bd._pipeline_name_keys()
     exclude_block = ", ".join(sorted(seen)[:150] + sorted(bd._pipeline_name_keys())[:150]) or "(none yet)"
-    found = _search(min(limit + 2, 6), exclude_block, model)
+    found = _search(min(max(limit, 1) + 1, 4), exclude_block, model)  # 26 Oct: asking for 5 timed out at 420 s
     if not found:
         return []
 
